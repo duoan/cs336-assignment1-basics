@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections import defaultdict, Counter
 import os
 import regex
 import multiprocessing
+from collections import defaultdict, Counter
 from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
 from loguru import logger
