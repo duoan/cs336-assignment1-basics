@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+from collections import defaultdict, Counter
 import os
+import regex
+import multiprocessing
 from collections.abc import Iterable
 from typing import IO, Any, BinaryIO
+from loguru import logger
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy.typing as npt
 import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
+PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
 def run_linear(
     d_in: int,
@@ -415,6 +421,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
+
     raise NotImplementedError
 
 
@@ -562,10 +569,39 @@ def get_tokenizer(
     raise NotImplementedError
 
 
+def _process_chunk(byte_data , special_tokens) -> Counter:
+    word_counts = Counter()
+    try:
+        text = byte_data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = byte_data.decode("utf-8", errors="replace")
+
+    special_tokens_set = set(special_tokens) if special_tokens else set()
+    special_pattern = None
+    if special_tokens:
+        special_pattern = regex.compile("(" + "|".join(regex.escape(tok) for tok in special_tokens) + ")")
+
+    parts = [text] if special_pattern is None else special_pattern.split(text)
+
+    for part in parts:
+        if not part:
+            continue
+
+        if special_tokens_set and part in special_tokens_set:
+            word_counts[part] += 1
+            continue
+
+        tokens = regex.finditer(PAT, part)
+        for token in tokens:
+            word_counts[token.group()] += 1
+    
+    return word_counts
+
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
     special_tokens: list[str],
+    chunk_size: int = 16 * 1024 * 1024, # 16MB buffer
     **kwargs,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """Given the path to an input corpus, run train a BPE tokenizer and
@@ -589,4 +625,127 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    # Initilize vocabulary 
+    vocab: dict[int, bytes] = {idx: token.encode('utf-8') for idx, token in enumerate(special_tokens)}
+    special_bytes_set = set(vocab.values())
+
+    next_vocab_idx = len(vocab)
+    for b in range(256): # add 256 byte values
+        byte_val = bytes([b])
+        if byte_val not in special_bytes_set:
+            vocab[next_vocab_idx] = byte_val
+            next_vocab_idx += 1
+
+    logger.info(f"Initial vocab size {len(vocab)}")
+
+    # Step2, Pre-tokenization
+    word_counts = Counter()
+    special_pattern = None
+    special_tokens_set = None
+    if special_tokens:
+        special_pattern = regex.compile("(" + "|".join(regex.escape(tok) for tok in special_tokens) + ")")
+        special_tokens_set = set(special_tokens)
+
+    current_splits: dict[tuple[bytes, ...], int] = defaultdict(int)
+
+    num_workers = max(1, multiprocessing.cpu_count() - 1)
+    logger.info(f"Starting parallel text scanning using {num_workers} processes...")
+    
+    with open(input_path, 'rb') as input_file:
+        remainder = b""
+        futures = []
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            while True:
+                chunk = input_file.read(chunk_size)
+                if not chunk:
+                    if remainder:
+                        futures.append(executor.submit(_process_chunk, remainder, special_tokens))
+                    break
+                combined = remainder + chunk
+                last_break = max(combined.rfind(b' '), combined.rfind(b'\n'))
+                if last_break == -1:
+                    remainder = combined
+                    continue
+                    
+                chunk_to_process = combined[:last_break + 1]
+                remainder = combined[last_break + 1:]
+                futures.append(executor.submit(_process_chunk, chunk_to_process, special_tokens))
+            logger.info(f"File reading complete. Waiting for {len(futures)} chunks to process...")
+
+            for i, future in enumerate(as_completed(futures), 1):
+                local_counts = future.result()
+                word_counts.update(local_counts)
+                if i % 10 == 0 or i == len(futures):
+                    logger.debug(f"Merged chunk {i} / {len(futures)}")
+
+    current_splits = {}
+    for word, count in word_counts.items():
+        if word in special_tokens:
+            current_splits[(word.encode("utf-8"),)] = count
+        else:
+            current_splits[tuple(bytes([b]) for b in word.encode("utf-8", errors="replace"))] = count
+    
+    # Merges
+    merges: list[tuple[bytes, bytes]] = []
+    num_merges = vocab_size - len(vocab)
+
+    def get_pair_freq(splits):
+        pair_freq: dict[tuple[bytes, bytes], int] = defaultdict(int)
+        for byte_tuple, freq in splits.items():
+            for i in range(len(byte_tuple) - 1):
+                pair_freq[(byte_tuple[i], byte_tuple[i + 1])] += freq
+
+        return pair_freq
+    
+
+    def merge_pair(splits: dict[tuple[bytes,...], int], pair_to_merge: tuple[bytes, bytes]):
+        new_splits = {}
+        (first_, second_) = pair_to_merge
+        merged_token = first_ + second_
+        for word_tuple, freq in splits.items():
+            symbols = list(word_tuple)
+            new_symbols = []
+            i = 0
+            while i < len(symbols):
+                if i < len(symbols) - 1 and symbols[i] == first_ and symbols[i + 1] == second_:
+                    new_symbols.append(merged_token)
+                    i += 2
+                else:
+                    new_symbols.append(symbols[i])
+                    i += 1
+            key = tuple(new_symbols)
+            new_splits[key] = new_splits.get(key, 0) + freq
+        
+        return new_splits
+
+
+    next_vocab_idx = len(vocab)
+
+    for i in range(num_merges):
+        logger.debug(f"Merge iteration {i} / {num_merges}")
+        pair_freq = get_pair_freq(current_splits)
+
+        if not pair_freq:
+            break
+
+        # find the most common pair
+        best_pair = max(pair_freq.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        best_freq = pair_freq[best_pair]
+        logger.debug(f"    Found best pair: {best_pair} with frequency {best_freq:,}")
+
+        # merge the best pair into a new token
+        new_token= best_pair[0] + best_pair[1]
+        logger.debug(f"    Merging {best_pair} into `{new_token}`")
+        current_splits = merge_pair(current_splits, best_pair)
+        # print(f"    Splits after merged: {current_splits}")
+
+        # update vocab with the new token
+        vocab[next_vocab_idx] = new_token
+        next_vocab_idx += 1
+
+        # store the merge
+        merges.append(best_pair)
+
+        logger.debug("-" * 30)
+        
+    return vocab, merges
