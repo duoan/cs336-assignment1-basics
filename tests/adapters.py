@@ -14,7 +14,7 @@ from jaxtyping import Bool, Float, Int
 from loguru import logger
 from torch import Tensor
 
-PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+from cs336_basics.consts import PAT
 
 
 def run_linear(
