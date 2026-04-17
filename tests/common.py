@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 import pathlib
 from functools import lru_cache
 
 FIXTURES_PATH = (pathlib.Path(__file__).resolve().parent) / "fixtures"
 DATA_PATH = (pathlib.Path(__file__).resolve().parent.parent) / "data"
+OUT_PATH = (pathlib.Path(__file__).resolve().parent.parent) / "out"
 
 
 @lru_cache
@@ -55,7 +58,59 @@ def gpt2_bytes_to_unicode() -> dict[int, str]:
     return d
 
 
+def save_vocab_and_merges(
+    dataset: str,
+    vocab: dict[int, bytes],
+    merges: list[tuple[bytes, bytes]],
+    *,
+    vocab_path: str = "vocab.json",
+    merges_path: str = "merges.txt",
+) -> None:
+
+    if not os.path.exists(OUT_PATH):
+        OUT_PATH.mkdir()
+
+    # --- vocab.json: {token_str: token_id} ---
+    # JSON keys must be strings, and bytes aren't JSON-serializable,
+    # so decode with latin-1 (lossless 1:1 byte <-> char mapping).
+    vocab_serializable = {
+        token_bytes.decode("latin-1"): token_id for token_id, token_bytes in sorted(vocab.items(), key=lambda x: x[0])
+    }
+    with open(OUT_PATH / f"{dataset}.{vocab_path}", "w", encoding="utf-8") as f:
+        json.dump(vocab_serializable, f, ensure_ascii=False, indent=2)
+
+    # --- merges.txt: one merge per line, "tokenA tokenB" ---
+    with open(OUT_PATH / f"{dataset}.{merges_path}", "w", encoding="utf-8") as f:
+        f.write("#version: 0.2\n")  # optional header, GPT-2 style
+        for a, b in merges:
+            f.write(f"{a.decode('latin-1')} {b.decode('latin-1')}\n")
+
+
+def load_vocab_and_merges(
+    dataset: str,
+    *,
+    vocab_path: str = "vocab.json",
+    merges_path: str = "merges.txt",
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+    # --- vocab ---
+    with open(OUT_PATH / f"{dataset}.{vocab_path}", encoding="utf-8") as f:
+        vocab_raw = json.load(f)
+    vocab: dict[int, bytes] = {token_id: token_str.encode("latin-1") for token_str, token_id in vocab_raw.items()}
+
+    # --- merges ---
+    merges: list[tuple[bytes, bytes]] = []
+    with open(OUT_PATH / f"{dataset}.{merges_path}", encoding="utf-8") as f:
+        for line in f:
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            a, b = line.split(" ", 1)
+            merges.append((a.encode("latin-1"), b.encode("latin-1")))
+
+    return vocab, merges
+
+
 if __name__ == "__main__":
     d = gpt2_bytes_to_unicode()
     for i, s in d.items():
-        print(i, type(s.encode('utf-8')))
+        print(i, type(s.encode("utf-8")))

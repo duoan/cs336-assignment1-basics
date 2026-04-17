@@ -4,7 +4,7 @@ import time
 import pytest
 
 from .adapters import run_train_bpe
-from .common import DATA_PATH, FIXTURES_PATH, gpt2_bytes_to_unicode
+from .common import DATA_PATH, FIXTURES_PATH, gpt2_bytes_to_unicode, save_vocab_and_merges
 
 
 def test_train_bpe_speed():
@@ -97,9 +97,17 @@ def test_train_bpe_tinystories_rust():
 
     vocab, merges = run_train_bpe(
         input_path=input_path,
-        vocab_size=1000,
+        vocab_size=10_000,
         special_tokens=["<|endoftext|>"],
     )
+
+    save_vocab_and_merges("tinystories", vocab, merges)
+
+    longest_id, longest_token = max(vocab.items(), key=lambda x: len(x[1]))
+    print(f"ID: {longest_id}")
+    print(f"Length: {len(longest_token)} bytes")
+    print(f"Bytes: {longest_token!r}")
+    print(f"Decoded: {longest_token.decode('utf-8', errors='replace')}")
 
 
 def test_train_bpe_tinystories_python():
@@ -109,7 +117,7 @@ def test_train_bpe_tinystories_python():
 
     run_train_bpe(
         input_path=input_path,
-        vocab_size=1000,
+        vocab_size=10_000,
         special_tokens=["<|endoftext|>"],
         using_rust=False,
     )
