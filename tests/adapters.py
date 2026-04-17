@@ -567,8 +567,9 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
+    from cs336_basics.tokenizer import Tokenizer
 
-    raise NotImplementedError
+    return Tokenizer(vocab, merges, special_tokens)
 
 
 def _process_chunk(byte_data, special_tokens) -> Counter:
@@ -636,7 +637,7 @@ def run_train_bpe(
 
             logger.info("Running BPE training with Rust implementation.")
             return run_train_bpe(input_path, vocab_size, special_tokens, chunk_size)
-        except:
+        except Exception:
             logger.warning("Rust lib not built, will use python implementation.")
 
     vocab: dict[int, bytes] = {idx: token.encode("utf-8") for idx, token in enumerate(special_tokens)}
