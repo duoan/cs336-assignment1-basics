@@ -128,8 +128,16 @@ def test_train_bpe_expts_owt():
     if not input_path.exists():
         pytest.skip(f"{input_path} not found")
 
-    run_train_bpe(
+    vocab, merges = run_train_bpe(
         input_path=input_path,
         vocab_size=32000,
         special_tokens=["<|endoftext|>"],
     )
+
+    save_vocab_and_merges("owt", vocab, merges)
+
+    longest_id, longest_token = max(vocab.items(), key=lambda x: len(x[1]))
+    print(f"ID: {longest_id}")
+    print(f"Length: {len(longest_token)} bytes")
+    print(f"Bytes: {longest_token!r}")
+    print(f"Decoded: {longest_token.decode('utf-8', errors='replace')}")
