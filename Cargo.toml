@@ -1,10 +1,10 @@
 [package]
-name = "cs336-basics-rust"
+name = "cs336_basics"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "cs336_basics_rust"
+name = "cs336_basics"
 crate-type = ["cdylib"]
 
 [dependencies]

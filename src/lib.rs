@@ -22,7 +22,14 @@ static GLOBAL: MiMalloc = MiMalloc;
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq)]
-enum CC { Letter, Digit, Space, Ws, Apos, Other }
+enum CC {
+    Letter,
+    Digit,
+    Space,
+    Ws,
+    Apos,
+    Other,
+}
 
 const fn build_ascii_cc() -> [CC; 128] {
     let mut t = [CC::Other; 128];
@@ -41,7 +48,9 @@ const fn build_ascii_cc() -> [CC; 128] {
         } else {
             CC::Other
         };
-        if i == 127 { break; }
+        if i == 127 {
+            break;
+        }
         i += 1;
     }
     t
@@ -52,21 +61,34 @@ static ASCII_CC: [CC; 128] = build_ascii_cc();
 #[inline]
 fn classify_nonascii(data: &[u8], pos: usize) -> (CC, usize) {
     let b0 = data[pos];
-    let seq_len = if b0 < 0xC0 { 1 }
-                  else if b0 < 0xE0 { 2 }
-                  else if b0 < 0xF0 { 3 }
-                  else { 4 };
+    let seq_len = if b0 < 0xC0 {
+        1
+    } else if b0 < 0xE0 {
+        2
+    } else if b0 < 0xF0 {
+        3
+    } else {
+        4
+    };
     if pos + seq_len > data.len() {
         return (CC::Other, 1);
     }
     match std::str::from_utf8(&data[pos..pos + seq_len]) {
         Ok(s) => {
             let c = s.chars().next().unwrap();
-            let cc = if c.is_alphabetic() { CC::Letter }
-                     else if c.is_numeric() { CC::Digit }
-                     else if c.is_whitespace() {
-                         if c == ' ' { CC::Space } else { CC::Ws }
-                     } else { CC::Other };
+            let cc = if c.is_alphabetic() {
+                CC::Letter
+            } else if c.is_numeric() {
+                CC::Digit
+            } else if c.is_whitespace() {
+                if c == ' ' {
+                    CC::Space
+                } else {
+                    CC::Ws
+                }
+            } else {
+                CC::Other
+            };
             (cc, seq_len)
         }
         Err(_) => (CC::Other, 1),
@@ -76,12 +98,18 @@ fn classify_nonascii(data: &[u8], pos: usize) -> (CC, usize) {
 #[inline(always)]
 fn cc_at(data: &[u8], pos: usize) -> (CC, usize) {
     let b = data[pos];
-    if b < 0x80 { (ASCII_CC[b as usize], 1) } else { classify_nonascii(data, pos) }
+    if b < 0x80 {
+        (ASCII_CC[b as usize], 1)
+    } else {
+        classify_nonascii(data, pos)
+    }
 }
 
 #[inline]
 fn try_contraction(data: &[u8], pos: usize) -> Option<usize> {
-    if pos + 1 >= data.len() { return None; }
+    if pos + 1 >= data.len() {
+        return None;
+    }
     match data[pos + 1] {
         b's' | b'd' | b'm' | b't' => Some(pos + 2),
         b'l' if pos + 2 < data.len() && data[pos + 2] == b'l' => Some(pos + 3),
@@ -97,21 +125,37 @@ fn scan_while(data: &[u8], start: usize, pred: impl Fn(CC) -> bool) -> usize {
     while i < data.len() {
         let b = data[i];
         if b < 0x80 {
-            if !pred(ASCII_CC[b as usize]) { break; }
+            if !pred(ASCII_CC[b as usize]) {
+                break;
+            }
             i += 1;
         } else {
             let (cc, adv) = classify_nonascii(data, i);
-            if !pred(cc) { break; }
+            if !pred(cc) {
+                break;
+            }
             i += adv;
         }
     }
     i
 }
 
-#[inline] fn is_letter(cc: CC) -> bool { cc == CC::Letter }
-#[inline] fn is_digit(cc: CC) -> bool { cc == CC::Digit }
-#[inline] fn is_other(cc: CC) -> bool { cc == CC::Other || cc == CC::Apos }
-#[inline] fn is_ws(cc: CC) -> bool { cc == CC::Space || cc == CC::Ws }
+#[inline]
+fn is_letter(cc: CC) -> bool {
+    cc == CC::Letter
+}
+#[inline]
+fn is_digit(cc: CC) -> bool {
+    cc == CC::Digit
+}
+#[inline]
+fn is_other(cc: CC) -> bool {
+    cc == CC::Other || cc == CC::Apos
+}
+#[inline]
+fn is_ws(cc: CC) -> bool {
+    cc == CC::Space || cc == CC::Ws
+}
 
 fn handle_ws<'a>(
     part: &'a [u8],
@@ -139,10 +183,7 @@ fn handle_ws<'a>(
     *wc.entry(Cow::Borrowed(&part[start..end])).or_default() += 1;
 }
 
-fn scan_part<'a>(
-    part: &'a [u8],
-    wc: &mut FxHashMap<Cow<'a, [u8]>, usize>,
-) {
+fn scan_part<'a>(part: &'a [u8], wc: &mut FxHashMap<Cow<'a, [u8]>, usize>) {
     let len = part.len();
     let mut i = 0;
     let mut pending_space = false;
@@ -160,8 +201,9 @@ fn scan_part<'a>(
             let end = match cc {
                 CC::Letter => scan_while(part, i, is_letter),
                 CC::Digit => scan_while(part, i, is_digit),
-                CC::Apos => try_contraction(part, i)
-                    .unwrap_or_else(|| scan_while(part, i, is_other)),
+                CC::Apos => {
+                    try_contraction(part, i).unwrap_or_else(|| scan_while(part, i, is_other))
+                }
                 _ => scan_while(part, i, is_other),
             };
             let mut v = Vec::with_capacity(1 + (end - start));
@@ -266,7 +308,9 @@ fn process_chunk<'a>(
     };
 
     for part in parts {
-        if part.is_empty() { continue; }
+        if part.is_empty() {
+            continue;
+        }
         if !special_set.is_empty() && special_set.contains(part) {
             *wc.entry(Cow::Borrowed(part)).or_default() += 1;
             continue;
@@ -330,7 +374,8 @@ fn train_bpe_core(
     let n_threads = rayon::current_num_threads();
     let batch_cap = n_threads * 2;
     let mut file = BufReader::with_capacity(
-        chunk_size, File::open(input_path).expect("failed to open input file"),
+        chunk_size,
+        File::open(input_path).expect("failed to open input file"),
     );
     let mut remainder: Vec<u8> = Vec::new();
     let mut chunk_count = 0usize;
@@ -368,14 +413,18 @@ fn train_bpe_core(
             }
         }
 
-        if batch.is_empty() { break; }
+        if batch.is_empty() {
+            break;
+        }
         chunk_count += batch.len();
 
         let batch_result: FxHashMap<Vec<u8>, usize> = batch
             .par_iter()
             .map(|c| process_chunk(c, special_re.as_ref(), &special_set))
             .reduce(FxHashMap::default, |mut acc, m| {
-                for (k, v) in m { *acc.entry(k).or_default() += v; }
+                for (k, v) in m {
+                    *acc.entry(k).or_default() += v;
+                }
                 acc
             });
 
@@ -400,7 +449,9 @@ fn train_bpe_core(
             }
         }
 
-        if eof { break; }
+        if eof {
+            break;
+        }
     }
 
     drop(file);
@@ -410,8 +461,12 @@ fn train_bpe_core(
     drop(word_to_idx);
 
     let num_words = split_start.len();
-    eprintln!("[BPE] Pre-tokenization done: {} chunks, {} words, {:.2}s elapsed",
-        chunk_count, num_words, t0.elapsed().as_secs_f64());
+    eprintln!(
+        "[BPE] Pre-tokenization done: {} chunks, {} words, {:.2}s elapsed",
+        chunk_count,
+        num_words,
+        t0.elapsed().as_secs_f64()
+    );
 
     // ── 3. Build pair statistics (single pass over flat splits) ──────────
     let mut pair_freq: FxHashMap<(u32, u32), i64> = FxHashMap::default();
@@ -428,8 +483,11 @@ fn train_bpe_core(
         }
     }
 
-    eprintln!("[BPE] Pair stats built: {} pairs, {:.2}s elapsed",
-        pair_freq.len(), t0.elapsed().as_secs_f64());
+    eprintln!(
+        "[BPE] Pair stats built: {} pairs, {:.2}s elapsed",
+        pair_freq.len(),
+        t0.elapsed().as_secs_f64()
+    );
 
     // ── 5. Merge loop (BinaryHeap with lazy deletion) ───────────────────
     //
@@ -440,7 +498,10 @@ fn train_bpe_core(
     for (&pair, &freq) in &pair_freq {
         heap.push((
             freq,
-            (token_table[pair.0 as usize].clone(), token_table[pair.1 as usize].clone()),
+            (
+                token_table[pair.0 as usize].clone(),
+                token_table[pair.1 as usize].clone(),
+            ),
             pair,
         ));
     }
@@ -453,12 +514,18 @@ fn train_bpe_core(
 
     for _i in 0..num_merges {
         if heap.len() > pair_freq.len() * 3 {
-            heap = pair_freq.iter()
-                .map(|(&pair, &freq)| (
-                    freq,
-                    (token_table[pair.0 as usize].clone(), token_table[pair.1 as usize].clone()),
-                    pair,
-                ))
+            heap = pair_freq
+                .iter()
+                .map(|(&pair, &freq)| {
+                    (
+                        freq,
+                        (
+                            token_table[pair.0 as usize].clone(),
+                            token_table[pair.1 as usize].clone(),
+                        ),
+                        pair,
+                    )
+                })
                 .collect();
         }
 
@@ -482,7 +549,8 @@ fn train_bpe_core(
         let new_bytes: Vec<u8> = [
             &*token_table[best_pair.0 as usize],
             &*token_table[best_pair.1 as usize],
-        ].concat();
+        ]
+        .concat();
         let new_id = token_table.len() as u32;
 
         merges.push((
@@ -509,7 +577,8 @@ fn train_bpe_core(
             type P2WDelta = FxHashMap<(u32, u32), (Vec<u32>, Vec<u32>)>;
             type Splits = Vec<(u32, Vec<u32>)>;
 
-            let (splits_out, freq_delta, p2w_delta) = word_ids.par_iter()
+            let (splits_out, freq_delta, p2w_delta) = word_ids
+                .par_iter()
                 .fold(
                     || (Splits::new(), FreqDelta::default(), P2WDelta::default()),
                     |(mut splits, mut fd, mut pw), &wid| {
@@ -521,7 +590,9 @@ fn train_bpe_core(
 
                         for w in old_split.windows(2) {
                             let p = (w[0], w[1]);
-                            if p == best_pair { continue; }
+                            if p == best_pair {
+                                continue;
+                            }
                             *fd.entry(p).or_default() -= count;
                             pw.entry(p).or_default().0.push(wid);
                         }
@@ -549,20 +620,22 @@ fn train_bpe_core(
 
                         splits.push((wid, new_split));
                         (splits, fd, pw)
-                    }
+                    },
                 )
                 .reduce(
                     || (Splits::new(), FreqDelta::default(), P2WDelta::default()),
                     |(mut s1, mut fd1, mut pw1), (s2, fd2, pw2)| {
                         s1.extend(s2);
-                        for (p, d) in fd2 { *fd1.entry(p).or_default() += d; }
+                        for (p, d) in fd2 {
+                            *fd1.entry(p).or_default() += d;
+                        }
                         for (p, (rem, add)) in pw2 {
                             let e = pw1.entry(p).or_default();
                             e.0.extend(rem);
                             e.1.extend(add);
                         }
                         (s1, fd1, pw1)
-                    }
+                    },
                 );
 
             for (wid, ns) in splits_out {
@@ -574,13 +647,17 @@ fn train_bpe_core(
             for (p, d) in freq_delta {
                 let f = pair_freq.entry(p).or_default();
                 *f += d;
-                if *f <= 0 { pair_freq.remove(&p); }
+                if *f <= 0 {
+                    pair_freq.remove(&p);
+                }
                 dirty_pairs.insert(p);
             }
 
             for (p, (removes, adds)) in p2w_delta {
                 if let Some(set) = pair_to_words.get_mut(&p) {
-                    for wid in removes { set.remove(&wid); }
+                    for wid in removes {
+                        set.remove(&wid);
+                    }
                 }
                 for wid in adds {
                     pair_to_words.entry(p).or_default().insert(wid);
@@ -596,10 +673,14 @@ fn train_bpe_core(
 
                 for i in 0..old_len.saturating_sub(1) {
                     let p = (split_data[s + i], split_data[s + i + 1]);
-                    if p == best_pair { continue; }
+                    if p == best_pair {
+                        continue;
+                    }
                     if let Some(f) = pair_freq.get_mut(&p) {
                         *f -= count;
-                        if *f <= 0 { pair_freq.remove(&p); }
+                        if *f <= 0 {
+                            pair_freq.remove(&p);
+                        }
                     }
                     if let Some(set) = pair_to_words.get_mut(&p) {
                         set.remove(&wid);
@@ -640,7 +721,10 @@ fn train_bpe_core(
                 if freq > 0 {
                     heap.push((
                         freq,
-                        (token_table[p.0 as usize].clone(), token_table[p.1 as usize].clone()),
+                        (
+                            token_table[p.0 as usize].clone(),
+                            token_table[p.1 as usize].clone(),
+                        ),
                         p,
                     ));
                 }
@@ -648,10 +732,13 @@ fn train_bpe_core(
         }
 
         if (_i + 1) % log_interval == 0 || _i + 1 == num_merges {
-            eprintln!("[BPE] Merge {}/{} ({:.1}%), {:.2}s elapsed",
-                _i + 1, num_merges,
+            eprintln!(
+                "[BPE] Merge {}/{} ({:.1}%), {:.2}s elapsed",
+                _i + 1,
+                num_merges,
                 (_i + 1) as f64 / num_merges as f64 * 100.0,
-                t0.elapsed().as_secs_f64());
+                t0.elapsed().as_secs_f64()
+            );
         }
     }
 
@@ -662,8 +749,12 @@ fn train_bpe_core(
         vocab.insert(id, token_table[id].to_vec());
     }
 
-    eprintln!("[BPE] Done! {} merges, vocab size {}, total {:.2}s",
-        merges.len(), vocab.len(), t0.elapsed().as_secs_f64());
+    eprintln!(
+        "[BPE] Done! {} merges, vocab size {}, total {:.2}s",
+        merges.len(),
+        vocab.len(),
+        t0.elapsed().as_secs_f64()
+    );
 
     (vocab, merges)
 }
@@ -716,7 +807,7 @@ fn hello() -> String {
 }
 
 #[pymodule]
-fn rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hello, m)?)?;
     m.add_function(wrap_pyfunction!(run_train_bpe, m)?)?;
     Ok(())

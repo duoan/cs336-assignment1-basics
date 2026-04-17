@@ -1,20 +1,21 @@
 from __future__ import annotations
 
-import os
-import regex
 import multiprocessing
-from collections import defaultdict, Counter
+import os
+from collections import Counter, defaultdict
 from collections.abc import Iterable
-from typing import IO, Any, BinaryIO
-from loguru import logger
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from typing import IO, Any, BinaryIO
 
 import numpy.typing as npt
+import regex
 import torch
 from jaxtyping import Bool, Float, Int
+from loguru import logger
 from torch import Tensor
 
 PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+
 
 def run_linear(
     d_in: int,
@@ -566,10 +567,11 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
+
     raise NotImplementedError
 
 
-def _process_chunk(byte_data , special_tokens) -> Counter:
+def _process_chunk(byte_data, special_tokens) -> Counter:
     word_counts = Counter()
     try:
         text = byte_data.decode("utf-8")
@@ -594,14 +596,15 @@ def _process_chunk(byte_data , special_tokens) -> Counter:
         tokens = regex.finditer(PAT, part)
         for token in tokens:
             word_counts[token.group()] += 1
-    
+
     return word_counts
+
 
 def run_train_bpe(
     input_path: str | os.PathLike,
     vocab_size: int,
     special_tokens: list[str],
-    chunk_size: int = 16 * 1024 * 1024, # 16MB buffer
+    chunk_size: int = 16 * 1024 * 1024,  # 16MB buffer
     using_rust: bool = True,
     **kwargs,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
@@ -629,17 +632,18 @@ def run_train_bpe(
     # Initilize vocabulary
     if using_rust:
         try:
-            from cs336_basics.rust import run_train_bpe
+            from cs336_basics._lib import run_train_bpe
+
             logger.info("Running BPE training with Rust implementation.")
             return run_train_bpe(input_path, vocab_size, special_tokens, chunk_size)
         except:
             logger.warning("Rust lib not built, will use python implementation.")
 
-    vocab: dict[int, bytes] = {idx: token.encode('utf-8') for idx, token in enumerate(special_tokens)}
+    vocab: dict[int, bytes] = {idx: token.encode("utf-8") for idx, token in enumerate(special_tokens)}
     special_bytes_set = set(vocab.values())
 
     next_vocab_idx = len(vocab)
-    for b in range(256): # add 256 byte values
+    for b in range(256):  # add 256 byte values
         byte_val = bytes([b])
         if byte_val not in special_bytes_set:
             vocab[next_vocab_idx] = byte_val
@@ -653,8 +657,8 @@ def run_train_bpe(
 
     num_workers = max(1, multiprocessing.cpu_count() - 1)
     logger.info(f"Starting parallel text scanning using {num_workers} processes...")
-    
-    with open(input_path, 'rb') as input_file:
+
+    with open(input_path, "rb") as input_file:
         remainder = b""
         futures = []
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
@@ -665,13 +669,13 @@ def run_train_bpe(
                         futures.append(executor.submit(_process_chunk, remainder, special_tokens))
                     break
                 combined = remainder + chunk
-                last_break = max(combined.rfind(b' '), combined.rfind(b'\n'))
+                last_break = max(combined.rfind(b" "), combined.rfind(b"\n"))
                 if last_break == -1:
                     remainder = combined
                     continue
-                    
-                chunk_to_process = combined[:last_break + 1]
-                remainder = combined[last_break + 1:]
+
+                chunk_to_process = combined[: last_break + 1]
+                remainder = combined[last_break + 1 :]
                 futures.append(executor.submit(_process_chunk, chunk_to_process, special_tokens))
             logger.info(f"File reading complete. Waiting for {len(futures)} chunks to process...")
 
@@ -687,11 +691,11 @@ def run_train_bpe(
             current_splits[(word.encode("utf-8"),)] = count
         else:
             current_splits[tuple(bytes([b]) for b in word.encode("utf-8", errors="replace"))] = count
-    
+
     # Merges
     logger.info("Initializing incremental data structure for merging...")
     pair_freq: dict[tuple[bytes, bytes], int] = defaultdict(int)
-    pair2words: dict[tuple[bytes, bytes], set[tuple[bytes,...]]] = defaultdict(set)
+    pair2words: dict[tuple[bytes, bytes], set[tuple[bytes, ...]]] = defaultdict(set)
 
     for word_tuple, count in current_splits.items():
         if len(word_tuple) < 2:
@@ -706,25 +710,24 @@ def run_train_bpe(
     next_vocab_idx = len(vocab)
 
     for i in range(num_merges):
-        
         if not pair_freq:
             break
 
         # find the most common pair
         best_pair = max(pair_freq.items(), key=lambda kv: (kv[1], kv[0]))[0]
         best_freq = pair_freq[best_pair]
-        
+
         if best_freq == 0:
             break
 
         # merge the best pair into a new token
-        new_token= best_pair[0] + best_pair[1]
+        new_token = best_pair[0] + best_pair[1]
 
         if (i + 1) % 100 == 0 or i == num_merges - 1:
             logger.debug(f"Merge iteration {i + 1} / {num_merges}")
             logger.debug(f"    Found best pair: {best_pair} with frequency {best_freq:,}")
             logger.debug(f"    Merging {best_pair} into `{new_token}`")
-        
+
         words_to_update = list(pair2words[best_pair])
 
         for word_tuple in words_to_update:
@@ -737,19 +740,19 @@ def run_train_bpe(
                     del pair_freq[old_pair]
                 if word_tuple in pair2words[old_pair]:
                     pair2words[old_pair].remove(word_tuple)
-            
+
             del current_splits[word_tuple]
 
             new_word_list = []
             j = 0
             while j < len(word_tuple):
-                if j < len(word_tuple) -1 and word_tuple[j] == best_pair[0] and word_tuple[j + 1] == best_pair[1]:
+                if j < len(word_tuple) - 1 and word_tuple[j] == best_pair[0] and word_tuple[j + 1] == best_pair[1]:
                     new_word_list.append(new_token)
                     j += 2
                 else:
                     new_word_list.append(word_tuple[j])
                     j += 1
-            
+
             new_word_tuple = tuple(new_word_list)
 
             current_splits[new_word_tuple] = current_splits.get(new_word_tuple, 0) + count
@@ -765,5 +768,5 @@ def run_train_bpe(
 
         # store the merge
         merges.append(best_pair)
-    
+
     return vocab, merges
