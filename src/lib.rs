@@ -492,49 +492,133 @@ fn train_bpe_core(
             .collect();
         pair_freq.remove(&best_pair);
 
+        const PAR_THRESHOLD: usize = 512;
+
         let mut dirty_pairs: FxHashSet<(u32, u32)> = FxHashSet::default();
 
-        for &wid in &word_ids {
-            let idx = wid as usize;
-            let count = word_freqs[idx] as i64;
-            let old_split = &word_splits[idx];
+        if word_ids.len() >= PAR_THRESHOLD {
+            // ── Parallel merge: fold/reduce with thread-local accumulators ──
+            type FreqDelta = FxHashMap<(u32, u32), i64>;
+            type P2WDelta = FxHashMap<(u32, u32), (Vec<u32>, Vec<u32>)>;
+            type Splits = Vec<(u32, Vec<u32>)>;
 
-            for w in old_split.windows(2) {
-                let p = (w[0], w[1]);
-                if p == best_pair { continue; }
-                if let Some(f) = pair_freq.get_mut(&p) {
-                    *f -= count;
-                    if *f <= 0 { pair_freq.remove(&p); }
-                }
+            let (splits_out, freq_delta, p2w_delta) = word_ids.par_iter()
+                .fold(
+                    || (Splits::new(), FreqDelta::default(), P2WDelta::default()),
+                    |(mut splits, mut fd, mut pw), &wid| {
+                        let idx = wid as usize;
+                        let count = word_freqs[idx] as i64;
+                        let old_split = &word_splits[idx];
+
+                        for w in old_split.windows(2) {
+                            let p = (w[0], w[1]);
+                            if p == best_pair { continue; }
+                            *fd.entry(p).or_default() -= count;
+                            pw.entry(p).or_default().0.push(wid);
+                        }
+
+                        let mut new_split = Vec::with_capacity(old_split.len());
+                        let mut j = 0;
+                        while j < old_split.len() {
+                            if j + 1 < old_split.len()
+                                && old_split[j] == best_pair.0
+                                && old_split[j + 1] == best_pair.1
+                            {
+                                new_split.push(new_id);
+                                j += 2;
+                            } else {
+                                new_split.push(old_split[j]);
+                                j += 1;
+                            }
+                        }
+
+                        for w in new_split.windows(2) {
+                            let p = (w[0], w[1]);
+                            *fd.entry(p).or_default() += count;
+                            pw.entry(p).or_default().1.push(wid);
+                        }
+
+                        splits.push((wid, new_split));
+                        (splits, fd, pw)
+                    }
+                )
+                .reduce(
+                    || (Splits::new(), FreqDelta::default(), P2WDelta::default()),
+                    |(mut s1, mut fd1, mut pw1), (s2, fd2, pw2)| {
+                        s1.extend(s2);
+                        for (p, d) in fd2 { *fd1.entry(p).or_default() += d; }
+                        for (p, (rem, add)) in pw2 {
+                            let e = pw1.entry(p).or_default();
+                            e.0.extend(rem);
+                            e.1.extend(add);
+                        }
+                        (s1, fd1, pw1)
+                    }
+                );
+
+            for (wid, ns) in splits_out {
+                word_splits[wid as usize] = ns;
+            }
+
+            for (p, d) in freq_delta {
+                let f = pair_freq.entry(p).or_default();
+                *f += d;
+                if *f <= 0 { pair_freq.remove(&p); }
+                dirty_pairs.insert(p);
+            }
+
+            for (p, (removes, adds)) in p2w_delta {
                 if let Some(set) = pair_to_words.get_mut(&p) {
-                    set.remove(&wid);
+                    for wid in removes { set.remove(&wid); }
                 }
-                dirty_pairs.insert(p);
-            }
-
-            let mut new_split: Vec<u32> = Vec::with_capacity(old_split.len());
-            let mut j = 0;
-            while j < old_split.len() {
-                if j + 1 < old_split.len()
-                    && old_split[j] == best_pair.0
-                    && old_split[j + 1] == best_pair.1
-                {
-                    new_split.push(new_id);
-                    j += 2;
-                } else {
-                    new_split.push(old_split[j]);
-                    j += 1;
+                for wid in adds {
+                    pair_to_words.entry(p).or_default().insert(wid);
                 }
             }
+        } else {
+            // ── Sequential merge (small word sets) ──────────────────────
+            for &wid in &word_ids {
+                let idx = wid as usize;
+                let count = word_freqs[idx] as i64;
+                let old_split = &word_splits[idx];
 
-            for w in new_split.windows(2) {
-                let p = (w[0], w[1]);
-                *pair_freq.entry(p).or_default() += count;
-                pair_to_words.entry(p).or_default().insert(wid);
-                dirty_pairs.insert(p);
+                for w in old_split.windows(2) {
+                    let p = (w[0], w[1]);
+                    if p == best_pair { continue; }
+                    if let Some(f) = pair_freq.get_mut(&p) {
+                        *f -= count;
+                        if *f <= 0 { pair_freq.remove(&p); }
+                    }
+                    if let Some(set) = pair_to_words.get_mut(&p) {
+                        set.remove(&wid);
+                    }
+                    dirty_pairs.insert(p);
+                }
+
+                let mut new_split: Vec<u32> = Vec::with_capacity(old_split.len());
+                let mut j = 0;
+                while j < old_split.len() {
+                    if j + 1 < old_split.len()
+                        && old_split[j] == best_pair.0
+                        && old_split[j + 1] == best_pair.1
+                    {
+                        new_split.push(new_id);
+                        j += 2;
+                    } else {
+                        new_split.push(old_split[j]);
+                        j += 1;
+                    }
+                }
+
+                for w in new_split.windows(2) {
+                    let p = (w[0], w[1]);
+                    *pair_freq.entry(p).or_default() += count;
+                    pair_to_words.entry(p).or_default().insert(wid);
+                    dirty_pairs.insert(p);
+                }
+
+                word_splits[idx] = new_split;
             }
-
-            word_splits[idx] = new_split;
         }
 
         for p in dirty_pairs {
@@ -618,7 +702,7 @@ fn hello() -> String {
 }
 
 #[pymodule]
-fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(hello, m)?)?;
     m.add_function(wrap_pyfunction!(run_train_bpe, m)?)?;
     Ok(())

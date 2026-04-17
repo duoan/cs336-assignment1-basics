@@ -30,7 +30,7 @@ build-backend = "maturin"
 [tool.maturin]
 features = ["pyo3/extension-module"]
 python-source = "."
-module-name = "cs336_basics._rust"
+module-name = "cs336_basics.rust"
 
 [tool.uv]
 package = true

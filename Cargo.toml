@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "cs336_basics__rust"
+name = "cs336_basics_rust"
 crate-type = ["cdylib"]
 
 [dependencies]

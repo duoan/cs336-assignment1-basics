@@ -629,7 +629,7 @@ def run_train_bpe(
     # Initilize vocabulary
     if using_rust:
         try:
-            from cs336_basics._rust import run_train_bpe
+            from cs336_basics.rust import run_train_bpe
             logger.info("Running BPE training with Rust implementation.")
             return run_train_bpe(input_path, vocab_size, special_tokens, chunk_size)
         except:
