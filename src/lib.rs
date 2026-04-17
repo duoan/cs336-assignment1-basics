@@ -11,19 +11,233 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyTuple};
 use rayon::prelude::*;
 use regex::bytes::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::sync::LazyLock;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
-static PAT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+"
-    )
-    .expect("failed to compile PAT regex")
-});
+// ─── Hand-written GPT-2 tokenizer (replaces regex) ─────────────────────────
+//
+// Equivalent to: '(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+
+// with \s+(?!\S) whitespace post-processing built in.
 
-// ─── Chunk processor (all-bytes, zero-copy for common matches) ──────────────
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq)]
+enum CC { Letter, Digit, Space, Ws, Apos, Other }
+
+const fn build_ascii_cc() -> [CC; 128] {
+    let mut t = [CC::Other; 128];
+    let mut i: u8 = 0;
+    loop {
+        t[i as usize] = if (i >= b'a' && i <= b'z') || (i >= b'A' && i <= b'Z') {
+            CC::Letter
+        } else if i >= b'0' && i <= b'9' {
+            CC::Digit
+        } else if i == b' ' {
+            CC::Space
+        } else if i == b'\t' || i == b'\n' || i == b'\r' || i == 0x0B || i == 0x0C {
+            CC::Ws
+        } else if i == b'\'' {
+            CC::Apos
+        } else {
+            CC::Other
+        };
+        if i == 127 { break; }
+        i += 1;
+    }
+    t
+}
+
+static ASCII_CC: [CC; 128] = build_ascii_cc();
+
+#[inline]
+fn classify_nonascii(data: &[u8], pos: usize) -> (CC, usize) {
+    let b0 = data[pos];
+    let seq_len = if b0 < 0xC0 { 1 }
+                  else if b0 < 0xE0 { 2 }
+                  else if b0 < 0xF0 { 3 }
+                  else { 4 };
+    if pos + seq_len > data.len() {
+        return (CC::Other, 1);
+    }
+    match std::str::from_utf8(&data[pos..pos + seq_len]) {
+        Ok(s) => {
+            let c = s.chars().next().unwrap();
+            let cc = if c.is_alphabetic() { CC::Letter }
+                     else if c.is_numeric() { CC::Digit }
+                     else if c.is_whitespace() {
+                         if c == ' ' { CC::Space } else { CC::Ws }
+                     } else { CC::Other };
+            (cc, seq_len)
+        }
+        Err(_) => (CC::Other, 1),
+    }
+}
+
+#[inline(always)]
+fn cc_at(data: &[u8], pos: usize) -> (CC, usize) {
+    let b = data[pos];
+    if b < 0x80 { (ASCII_CC[b as usize], 1) } else { classify_nonascii(data, pos) }
+}
+
+#[inline]
+fn try_contraction(data: &[u8], pos: usize) -> Option<usize> {
+    if pos + 1 >= data.len() { return None; }
+    match data[pos + 1] {
+        b's' | b'd' | b'm' | b't' => Some(pos + 2),
+        b'l' if pos + 2 < data.len() && data[pos + 2] == b'l' => Some(pos + 3),
+        b'v' if pos + 2 < data.len() && data[pos + 2] == b'e' => Some(pos + 3),
+        b'r' if pos + 2 < data.len() && data[pos + 2] == b'e' => Some(pos + 3),
+        _ => None,
+    }
+}
+
+#[inline]
+fn scan_while(data: &[u8], start: usize, pred: impl Fn(CC) -> bool) -> usize {
+    let mut i = start;
+    while i < data.len() {
+        let b = data[i];
+        if b < 0x80 {
+            if !pred(ASCII_CC[b as usize]) { break; }
+            i += 1;
+        } else {
+            let (cc, adv) = classify_nonascii(data, i);
+            if !pred(cc) { break; }
+            i += adv;
+        }
+    }
+    i
+}
+
+#[inline] fn is_letter(cc: CC) -> bool { cc == CC::Letter }
+#[inline] fn is_digit(cc: CC) -> bool { cc == CC::Digit }
+#[inline] fn is_other(cc: CC) -> bool { cc == CC::Other || cc == CC::Apos }
+#[inline] fn is_ws(cc: CC) -> bool { cc == CC::Space || cc == CC::Ws }
+
+fn handle_ws<'a>(
+    part: &'a [u8],
+    start: usize,
+    end: usize,
+    wc: &mut FxHashMap<Cow<'a, [u8]>, usize>,
+    pending_space: &mut bool,
+) {
+    let run_len = end - start;
+    if run_len > 1 && end < part.len() {
+        let (ncc, _) = cc_at(part, end);
+        if !is_ws(ncc) {
+            let last_byte = part[end - 1];
+            if end - 1 > start {
+                *wc.entry(Cow::Borrowed(&part[start..end - 1])).or_default() += 1;
+            }
+            if last_byte == b' ' {
+                *pending_space = true;
+            } else {
+                *wc.entry(Cow::Borrowed(&part[end - 1..end])).or_default() += 1;
+            }
+            return;
+        }
+    }
+    *wc.entry(Cow::Borrowed(&part[start..end])).or_default() += 1;
+}
+
+fn scan_part<'a>(
+    part: &'a [u8],
+    wc: &mut FxHashMap<Cow<'a, [u8]>, usize>,
+) {
+    let len = part.len();
+    let mut i = 0;
+    let mut pending_space = false;
+
+    while i < len {
+        let (cc, _) = cc_at(part, i);
+
+        if pending_space {
+            pending_space = false;
+            if is_ws(cc) {
+                *wc.entry(Cow::Owned(vec![b' '])).or_default() += 1;
+                continue;
+            }
+            let start = i;
+            let end = match cc {
+                CC::Letter => scan_while(part, i, is_letter),
+                CC::Digit => scan_while(part, i, is_digit),
+                CC::Apos => try_contraction(part, i)
+                    .unwrap_or_else(|| scan_while(part, i, is_other)),
+                _ => scan_while(part, i, is_other),
+            };
+            let mut v = Vec::with_capacity(1 + (end - start));
+            v.push(b' ');
+            v.extend_from_slice(&part[start..end]);
+            *wc.entry(Cow::Owned(v)).or_default() += 1;
+            i = end;
+            continue;
+        }
+
+        match cc {
+            CC::Letter => {
+                let end = scan_while(part, i, is_letter);
+                *wc.entry(Cow::Borrowed(&part[i..end])).or_default() += 1;
+                i = end;
+            }
+            CC::Digit => {
+                let end = scan_while(part, i, is_digit);
+                *wc.entry(Cow::Borrowed(&part[i..end])).or_default() += 1;
+                i = end;
+            }
+            CC::Apos => {
+                if let Some(end) = try_contraction(part, i) {
+                    *wc.entry(Cow::Borrowed(&part[i..end])).or_default() += 1;
+                    i = end;
+                } else {
+                    let end = scan_while(part, i, is_other);
+                    *wc.entry(Cow::Borrowed(&part[i..end])).or_default() += 1;
+                    i = end;
+                }
+            }
+            CC::Other => {
+                let end = scan_while(part, i, is_other);
+                *wc.entry(Cow::Borrowed(&part[i..end])).or_default() += 1;
+                i = end;
+            }
+            CC::Space => {
+                if i + 1 < len {
+                    let (ncc, _) = cc_at(part, i + 1);
+                    match ncc {
+                        CC::Letter => {
+                            let end = scan_while(part, i + 1, is_letter);
+                            *wc.entry(Cow::Borrowed(&part[i..end])).or_default() += 1;
+                            i = end;
+                        }
+                        CC::Digit => {
+                            let end = scan_while(part, i + 1, is_digit);
+                            *wc.entry(Cow::Borrowed(&part[i..end])).or_default() += 1;
+                            i = end;
+                        }
+                        CC::Apos | CC::Other => {
+                            let end = scan_while(part, i + 1, is_other);
+                            *wc.entry(Cow::Borrowed(&part[i..end])).or_default() += 1;
+                            i = end;
+                        }
+                        CC::Space | CC::Ws => {
+                            let end = scan_while(part, i, is_ws);
+                            handle_ws(part, i, end, wc, &mut pending_space);
+                            i = end;
+                        }
+                    }
+                } else {
+                    *wc.entry(Cow::Borrowed(&part[i..i + 1])).or_default() += 1;
+                    i += 1;
+                }
+            }
+            CC::Ws => {
+                let end = scan_while(part, i, is_ws);
+                handle_ws(part, i, end, wc, &mut pending_space);
+                i = end;
+            }
+        }
+    }
+}
+
+// ─── Chunk processor ────────────────────────────────────────────────────────
 
 fn process_chunk<'a>(
     byte_data: &'a [u8],
@@ -57,36 +271,7 @@ fn process_chunk<'a>(
             *wc.entry(Cow::Borrowed(part)).or_default() += 1;
             continue;
         }
-        let mut pending_space = false;
-        for m in PAT.find_iter(part) {
-            let matched = m.as_bytes();
-
-            if pending_space {
-                let mut v = Vec::with_capacity(1 + matched.len());
-                v.push(b' ');
-                v.extend_from_slice(matched);
-                *wc.entry(Cow::Owned(v)).or_default() += 1;
-                pending_space = false;
-                continue;
-            }
-
-            let is_all_ws = matched.len() > 1
-                && matched.iter().all(|&b| b.is_ascii_whitespace());
-            if is_all_ws && m.end() < part.len() && !part[m.end()].is_ascii_whitespace() {
-                let last_byte = matched[matched.len() - 1];
-                let trimmed = &matched[..matched.len() - 1];
-                if !trimmed.is_empty() {
-                    *wc.entry(Cow::Borrowed(trimmed)).or_default() += 1;
-                }
-                if last_byte == b' ' {
-                    pending_space = true;
-                } else {
-                    *wc.entry(Cow::Owned(vec![last_byte])).or_default() += 1;
-                }
-            } else {
-                *wc.entry(Cow::Borrowed(matched)).or_default() += 1;
-            }
-        }
+        scan_part(part, &mut wc);
     }
 
     wc.into_iter().map(|(k, v)| (k.into_owned(), v)).collect()
