@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import atexit
-import io
 import json
 import multiprocessing as mp
 import os
@@ -501,22 +500,23 @@ def _encode_doc(doc_bytes: bytes) -> np.ndarray:
     return np.array(ids, dtype=np.uint16)
 
 
-def _encode_data_file(dataset: str, input_path: str | io.PathLike, output_file_name: str):
+def _encode_data_file(dataset: str, input_path: str | os.PathLike, output_file_name: str):
 
     vocab, merges = load_vocab_and_merges(dataset)
     output_path = OUT_PATH / output_file_name
 
     with (
-        open(output_path, "wb") as out,
+        open(output_path, "wb", buffering=1 << 20) as out,
         mp.Pool(
-            mp.cpu_count() - 1,
+            processes=max(1, (os.cpu_count() or 2) - 1),
             initializer=_init_worker,
             initargs=(vocab, merges, ["<|endoftext|>"]),
         ) as pool,
     ):
         chunk_iter = stream_chunks_by_special_token(input_path)
+        chunksize = 256 if dataset == "tinystories" else 32
         for arr in tqdm(
-            pool.imap(_encode_doc, chunk_iter, chunksize=64),
+            pool.imap(_encode_doc, chunk_iter, chunksize=chunksize),
             desc="Tokenizing",
         ):
             out.write(arr.tobytes())
@@ -530,22 +530,40 @@ def test_encode_all_data():
     if not OUT_PATH.exists():
         pytest.skip(f"{OUT_PATH} not found")
 
-    for data_file in os.listdir(DATA_PATH):
+    for data_file in sorted(os.listdir(DATA_PATH)):
         data_file_path = DATA_PATH / data_file
         print(f"Encoding {data_file_path}")
         dataset = "tinystories" if "tinystories" in data_file.lower() else "owt"
         _encode_data_file(dataset, data_file_path, data_file.replace(".txt", ".ids.bin"))
 
 
+# Vocab sizes for sanity-check assertion
+VOCAB_SIZES = {
+    "ts": 10_000,
+    "owt": 32_000,
+}
+
+
 def test_encode_sanity_check():
     if not OUT_PATH.exists():
         pytest.skip(f"{OUT_PATH} not found")
 
-    for name, path in [
-        ("ts_train", OUT_PATH / "TinyStoriesV2-GPT4-train.ids.bin"),
-        ("ts_valid", OUT_PATH / "TinyStoriesV2-GPT4-valid.ids.bin"),
-        ("owt_train", OUT_PATH / "owt_train.ids.bin"),
-        ("owt_valid", OUT_PATH / "owt_valid.ids.bin"),
-    ]:
+    files = [
+        ("ts_train", OUT_PATH / "TinyStoriesV2-GPT4-train.ids.bin", VOCAB_SIZES["ts"]),
+        ("ts_valid", OUT_PATH / "TinyStoriesV2-GPT4-valid.ids.bin", VOCAB_SIZES["ts"]),
+        ("owt_train", OUT_PATH / "owt_train.ids.bin", VOCAB_SIZES["owt"]),
+        ("owt_valid", OUT_PATH / "owt_valid.ids.bin", VOCAB_SIZES["owt"]),
+    ]
+
+    for name, path, vocab_size in files:
+        if not path.exists():
+            print(f"⏭  {name}: file not found, skip")
+            continue
+
         data = np.memmap(path, dtype=np.uint16, mode="r")
-        print(f"{name:12s}: {len(data):>14,} tokens, max_id={data[:1_000_000].max()}, min_id={data[:1_000_000].min()}")
+        # ⭐ 全量扫描,几秒钟搞定
+        max_id = int(data.max())
+        min_id = int(data.min())
+        print(f"{name:12s}: {len(data):>14,} tokens, max_id={max_id}, min_id={min_id}")
+        assert max_id < vocab_size, f"OOV in {name}: max_id={max_id} >= vocab_size={vocab_size}"
+        assert min_id >= 0
