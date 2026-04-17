@@ -1,6 +1,7 @@
 import json
+import multiprocessing
 import os
-from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 import regex
 
@@ -23,7 +24,8 @@ class Tokenizer:
         self._special_tokens_set: set[str] = set(special_tokens) if special_tokens else set()
         self._special_pattern = None
         if special_tokens:
-            self._special_pattern = regex.compile("(" + "|".join(regex.escape(tok) for tok in special_tokens) + ")")
+            sorted_tokens = sorted(special_tokens, key=len, reverse=True)
+            self._special_pattern = regex.compile("(" + "|".join(regex.escape(tok) for tok in sorted_tokens) + ")")
 
         pass
 
@@ -51,25 +53,26 @@ class Tokenizer:
         if not text:
             return []
         # pre-tokenize
-        splits: dict[tuple[bytes, ...], int] = defaultdict(int)
-        parts = [text] if self._special_pattern is None else self._special_pattern.split(text)
-        for part in parts:
-            if not part:
+        splits: list[str] = []
+        chunks = [text] if self._special_pattern is None else self._special_pattern.split(text)
+        for chunk in chunks:
+            if not chunk:
                 continue
 
-            if self._special_tokens_set and part in self._special_tokens_set:
-                splits[(part.encode("utf-8"),)] += 1
+            if self._special_tokens_set and chunk in self._special_tokens_set:
+                splits.append(chunk)
                 continue
 
-            tokens = regex.finditer(PAT, part)
-            for token in tokens:
-                word = token.group()
-                key = tuple(bytes([b]) for b in word.encode("utf-8", errors="replace"))
-                splits[key] += 1
+            parts = regex.finditer(PAT, chunk)
+            for part in parts:
+                splits.append(part.group())
 
         # merge
         merged_word_tokens = []
-        for word_token_tuple, count in splits.items():
+        num_works = max(1, multiprocessing.cpu_count() - 1)
+
+        def merge_work_token_tuple(split):
+            word_token_tuple = tuple(bytes([b]) for b in split.encode("utf-8"))
             for merge in self.merges:
                 new_word_tokens: list[bytes] = list()
                 token = merge[0] + merge[1]
@@ -85,9 +88,24 @@ class Tokenizer:
                     else:
                         new_word_tokens.append(word_token_tuple[i])
                         i += 1
+
                 word_token_tuple = tuple(new_word_tokens)
 
-            merged_word_tokens.extend(list(word_token_tuple))
+            return word_token_tuple
+
+        with ThreadPoolExecutor(num_works) as pool:
+            futures = []
+            for split in splits:
+                if split in self._special_tokens_set:
+                    futures.append(None)
+                else:
+                    futures.append(pool.submit(merge_work_token_tuple, split))
+
+            for i, future in enumerate(futures):
+                if future is None:
+                    merged_word_tokens.append(splits[i].encode("utf-8"))
+                else:
+                    merged_word_tokens.extend(list(future.result()))
 
         idxs: list[int] = []
 
@@ -95,6 +113,10 @@ class Tokenizer:
             idxs.append(self.token2idxs.get(token, -1))
 
         return idxs
+
+    def encode_iterable(self, iterable):
+        for line in iterable:
+            yield from self.encode(line)
 
     def decode(self, idxs: list[int]) -> str:
         if not idxs:
