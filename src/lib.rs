@@ -288,7 +288,7 @@ fn train_bpe_core(
     use std::time::Instant;
     let t0 = Instant::now();
 
-    // ── 1. Initialize token table (Rc<[u8]> for O(1) clone) ─────────────
+    // ── 1. Initialize token table (Rc<[u8]> for O(1) heap sort-key clone)
     let mut token_table: Vec<Rc<[u8]>> = Vec::new();
     let mut token_to_id: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
 
@@ -336,7 +336,9 @@ fn train_bpe_core(
     let mut chunk_count = 0usize;
 
     let mut word_to_idx: FxHashMap<Vec<u8>, u32> = FxHashMap::default();
-    let mut word_splits: Vec<Vec<u32>> = Vec::new();
+    let mut split_data: Vec<u32> = Vec::new();
+    let mut split_start: Vec<u32> = Vec::new();
+    let mut split_len: Vec<u32> = Vec::new();
     let mut word_freqs: Vec<u64> = Vec::new();
 
     loop {
@@ -383,13 +385,15 @@ fn train_bpe_core(
                     word_freqs[idx as usize] += count as u64;
                 }
                 None => {
-                    let idx = word_splits.len() as u32;
+                    let idx = split_start.len() as u32;
                     let split: Vec<u32> = if special_set.contains(word.as_slice()) {
                         vec![token_to_id[&word]]
                     } else {
                         word.iter().map(|&b| token_to_id[&vec![b]]).collect()
                     };
-                    word_splits.push(split);
+                    split_start.push(split_data.len() as u32);
+                    split_len.push(split.len() as u32);
+                    split_data.extend_from_slice(&split);
                     word_freqs.push(count as u64);
                     word_to_idx.insert(word, idx);
                 }
@@ -405,16 +409,19 @@ fn train_bpe_core(
     drop(token_to_id);
     drop(word_to_idx);
 
+    let num_words = split_start.len();
     eprintln!("[BPE] Pre-tokenization done: {} chunks, {} words, {:.2}s elapsed",
-        chunk_count, word_splits.len(), t0.elapsed().as_secs_f64());
+        chunk_count, num_words, t0.elapsed().as_secs_f64());
 
-    // ── 3. Build pair statistics (single pass over final splits) ──────────
+    // ── 3. Build pair statistics (single pass over flat splits) ──────────
     let mut pair_freq: FxHashMap<(u32, u32), i64> = FxHashMap::default();
     let mut pair_to_words: FxHashMap<(u32, u32), FxHashSet<u32>> = FxHashMap::default();
 
-    for (wid, split) in word_splits.iter().enumerate() {
+    for wid in 0..num_words {
+        let s = split_start[wid] as usize;
+        let l = split_len[wid] as usize;
         let c = word_freqs[wid] as i64;
-        for w in split.windows(2) {
+        for w in split_data[s..s + l].windows(2) {
             let pair = (w[0], w[1]);
             *pair_freq.entry(pair).or_default() += c;
             pair_to_words.entry(pair).or_default().insert(wid as u32);
@@ -427,7 +434,7 @@ fn train_bpe_core(
     // ── 5. Merge loop (BinaryHeap with lazy deletion) ───────────────────
     //
     // Heap entries: (freq, sort_key, pair_ids).
-    // sort_key uses Rc<[u8]> for O(1) clone, with correct lex tiebreaking.
+    // sort_key uses Rc<[u8]> for O(1) clone with correct lex tiebreaking.
     // Lazy deletion: when popped freq != pair_freq[pair], entry is stale.
     let mut heap: BinaryHeap<(i64, (Rc<[u8]>, Rc<[u8]>), (u32, u32))> = BinaryHeap::new();
     for (&pair, &freq) in &pair_freq {
@@ -508,7 +515,9 @@ fn train_bpe_core(
                     |(mut splits, mut fd, mut pw), &wid| {
                         let idx = wid as usize;
                         let count = word_freqs[idx] as i64;
-                        let old_split = &word_splits[idx];
+                        let s = split_start[idx] as usize;
+                        let l = split_len[idx] as usize;
+                        let old_split = &split_data[s..s + l];
 
                         for w in old_split.windows(2) {
                             let p = (w[0], w[1]);
@@ -517,10 +526,10 @@ fn train_bpe_core(
                             pw.entry(p).or_default().0.push(wid);
                         }
 
-                        let mut new_split = Vec::with_capacity(old_split.len());
+                        let mut new_split = Vec::with_capacity(l);
                         let mut j = 0;
-                        while j < old_split.len() {
-                            if j + 1 < old_split.len()
+                        while j < l {
+                            if j + 1 < l
                                 && old_split[j] == best_pair.0
                                 && old_split[j + 1] == best_pair.1
                             {
@@ -557,7 +566,9 @@ fn train_bpe_core(
                 );
 
             for (wid, ns) in splits_out {
-                word_splits[wid as usize] = ns;
+                let s = split_start[wid as usize] as usize;
+                split_data[s..s + ns.len()].copy_from_slice(&ns);
+                split_len[wid as usize] = ns.len() as u32;
             }
 
             for (p, d) in freq_delta {
@@ -576,14 +587,15 @@ fn train_bpe_core(
                 }
             }
         } else {
-            // ── Sequential merge (small word sets) ──────────────────────
+            // ── Sequential merge (in-place on flat split_data) ──────────
             for &wid in &word_ids {
                 let idx = wid as usize;
                 let count = word_freqs[idx] as i64;
-                let old_split = &word_splits[idx];
+                let s = split_start[idx] as usize;
+                let old_len = split_len[idx] as usize;
 
-                for w in old_split.windows(2) {
-                    let p = (w[0], w[1]);
+                for i in 0..old_len.saturating_sub(1) {
+                    let p = (split_data[s + i], split_data[s + i + 1]);
                     if p == best_pair { continue; }
                     if let Some(f) = pair_freq.get_mut(&p) {
                         *f -= count;
@@ -595,29 +607,31 @@ fn train_bpe_core(
                     dirty_pairs.insert(p);
                 }
 
-                let mut new_split: Vec<u32> = Vec::with_capacity(old_split.len());
+                let mut wp = s;
                 let mut j = 0;
-                while j < old_split.len() {
-                    if j + 1 < old_split.len()
-                        && old_split[j] == best_pair.0
-                        && old_split[j + 1] == best_pair.1
+                while j < old_len {
+                    if j + 1 < old_len
+                        && split_data[s + j] == best_pair.0
+                        && split_data[s + j + 1] == best_pair.1
                     {
-                        new_split.push(new_id);
+                        split_data[wp] = new_id;
+                        wp += 1;
                         j += 2;
                     } else {
-                        new_split.push(old_split[j]);
+                        split_data[wp] = split_data[s + j];
+                        wp += 1;
                         j += 1;
                     }
                 }
+                let new_len = wp - s;
+                split_len[idx] = new_len as u32;
 
-                for w in new_split.windows(2) {
-                    let p = (w[0], w[1]);
+                for i in 0..new_len.saturating_sub(1) {
+                    let p = (split_data[s + i], split_data[s + i + 1]);
                     *pair_freq.entry(p).or_default() += count;
                     pair_to_words.entry(p).or_default().insert(wid);
                     dirty_pairs.insert(p);
                 }
-
-                word_splits[idx] = new_split;
             }
         }
 
