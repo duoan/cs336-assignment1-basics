@@ -1,7 +1,6 @@
 import json
-import multiprocessing
 import os
-from concurrent.futures import ThreadPoolExecutor
+from functools import cache
 
 import regex
 
@@ -18,6 +17,7 @@ class Tokenizer:
     ) -> None:
         self.idx2tokens = vocab
         self.token2idxs = {token: idx for idx, token in vocab.items()}
+        self.merge_ranks: dict[tuple[bytes, bytes], int] = {pair: i for i, pair in enumerate(merges)}
         self.merges = merges
         self.special_tokens = special_tokens
 
@@ -25,9 +25,15 @@ class Tokenizer:
         self._special_pattern = None
         if special_tokens:
             sorted_tokens = sorted(special_tokens, key=len, reverse=True)
-            self._special_pattern = regex.compile("(" + "|".join(regex.escape(tok) for tok in sorted_tokens) + ")")
 
-        self._pool = ThreadPoolExecutor(max(1, multiprocessing.cpu_count() - 1))
+            # add the special token when miss them in vocab
+            for special_token in sorted_tokens:
+                special_token = special_token.encode("utf-8")
+                if special_token not in self.token2idxs:
+                    self.idx2tokens[len(self.idx2tokens)] = special_token
+                    self.token2idxs[special_token] = self.idx2tokens[len(self.idx2tokens) - 1]
+
+            self._special_pattern = regex.compile("(" + "|".join(regex.escape(tok) for tok in sorted_tokens) + ")")
 
     @classmethod
     def from_files(
@@ -49,63 +55,57 @@ class Tokenizer:
 
         return Tokenizer(vocab, merges, special_tokens)
 
-    def _merge_word_token_tuple(self, split):
-        word_token_tuple = tuple(bytes([b]) for b in split.encode("utf-8"))
-        for merge in self.merges:
-            new_word_tokens: list[bytes] = []
-            token = merge[0] + merge[1]
+    @cache
+    def _bpe(self, word: str) -> tuple[bytes, ...]:
+        # 缓存命中:99% 的词都会命中(自然语言的 Zipf 分布)
+        tokens = [bytes([b]) for b in word.encode("utf-8")]
+
+        while len(tokens) >= 2:
+            # 找出当前所有 pair 中 rank 最小的那个
+            pairs = [(tokens[i], tokens[i + 1]) for i in range(len(tokens) - 1)]
+            best = min(
+                pairs,
+                key=lambda p: self.merge_ranks.get(p, float("inf")),
+            )
+            if best not in self.merge_ranks:
+                break  # 没有可 merge 的 pair 了
+
+            # 把所有的 best pair merge 掉
+            new_tokens = []
             i = 0
-            while i < len(word_token_tuple):
-                if (
-                    i < len(word_token_tuple) - 1
-                    and merge[0] == word_token_tuple[i]
-                    and merge[1] == word_token_tuple[i + 1]
-                ):
-                    new_word_tokens.append(token)
+            merged = best[0] + best[1]
+            while i < len(tokens):
+                if i < len(tokens) - 1 and tokens[i] == best[0] and tokens[i + 1] == best[1]:
+                    new_tokens.append(merged)
                     i += 2
                 else:
-                    new_word_tokens.append(word_token_tuple[i])
+                    new_tokens.append(tokens[i])
                     i += 1
-            word_token_tuple = tuple(new_word_tokens)
-        return word_token_tuple
+            tokens = new_tokens
+
+        return tuple(tokens)
 
     def encode(self, text: str) -> list[int]:
         if not text:
             return []
         # pre-tokenize
-        splits: list[str] = []
         chunks = [text] if self._special_pattern is None else self._special_pattern.split(text)
+
+        idxs: list[int] = []
+
         for chunk in chunks:
             if not chunk:
                 continue
 
             if self._special_tokens_set and chunk in self._special_tokens_set:
-                splits.append(chunk)
+                idxs.append(self.token2idxs[chunk.encode("utf-8")])
                 continue
 
             parts = regex.finditer(PAT, chunk)
             for part in parts:
-                splits.append(part.group())
-
-        # merge
-        merged_word_tokens = []
-        futures = []
-        for split in splits:
-            if split in self._special_tokens_set:
-                futures.append(None)
-            else:
-                futures.append(self._pool.submit(self._merge_word_token_tuple, split))
-
-        for i, future in enumerate(futures):
-            if future is None:
-                merged_word_tokens.append(splits[i].encode("utf-8"))
-            else:
-                merged_word_tokens.extend(list(future.result()))
-
-        idxs: list[int] = []
-
-        for token in merged_word_tokens:
-            idxs.append(self.token2idxs.get(token, -1))
+                word = part.group()
+                for token in self._bpe(word):
+                    idxs.append(self.token2idxs[token])
 
         return idxs
 

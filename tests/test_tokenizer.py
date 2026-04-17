@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import atexit
+import io
 import json
+import multiprocessing as mp
 import os
 import resource
 import sys
 
+import numpy as np
 import psutil
 import pytest
 import tiktoken
+from tqdm import tqdm
+
+from cs336_basics.common import stream_chunks_by_special_token
 
 from .adapters import get_tokenizer
-from .common import FIXTURES_PATH, gpt2_bytes_to_unicode
+from .common import DATA_PATH, FIXTURES_PATH, OUT_PATH, gpt2_bytes_to_unicode, load_vocab_and_merges
 
 VOCAB_PATH = FIXTURES_PATH / "gpt2_vocab.json"
 MERGES_PATH = FIXTURES_PATH / "gpt2_merges.txt"
@@ -462,3 +469,83 @@ def _encode(tokenizer, text):
     for just this function. We set the memory limit to 1MB.
     """
     return tokenizer.encode(text)
+
+
+_TOKENIZER = None
+_EOT_ID = None
+
+
+def _init_worker(vocab, merges, special_tokens):
+    """Pool initializer:每个 worker 进程启动时跑一次,初始化 tokenizer。"""
+    global _TOKENIZER, _EOT_ID
+    _TOKENIZER = get_tokenizer(vocab, merges, special_tokens=special_tokens)
+    _EOT_ID = _TOKENIZER.encode("<|endoftext|>")[0]
+
+    def _report():
+        info = _TOKENIZER._bpe.cache_info()
+        total = info.hits + info.misses
+        rate = info.hits / total if total else 0
+        print(
+            f"[pid={os.getpid()}] hits={info.hits:,} misses={info.misses:,} "
+            f"hit_rate={rate:.2%} cached={info.currsize:,}",
+            flush=True,
+        )
+
+    atexit.register(_report)
+
+
+def _encode_doc(doc_bytes: bytes) -> np.ndarray:
+    text = doc_bytes.decode("utf-8", errors="ignore")
+    ids = _TOKENIZER.encode(text)
+    ids.append(_EOT_ID)
+    return np.array(ids, dtype=np.uint16)
+
+
+def _encode_data_file(dataset: str, input_path: str | io.PathLike, output_file_name: str):
+
+    vocab, merges = load_vocab_and_merges(dataset)
+    output_path = OUT_PATH / output_file_name
+
+    with (
+        open(output_path, "wb") as out,
+        mp.Pool(
+            mp.cpu_count() - 1,
+            initializer=_init_worker,
+            initargs=(vocab, merges, ["<|endoftext|>"]),
+        ) as pool,
+    ):
+        chunk_iter = stream_chunks_by_special_token(input_path)
+        for arr in tqdm(
+            pool.imap(_encode_doc, chunk_iter, chunksize=64),
+            desc="Tokenizing",
+        ):
+            out.write(arr.tobytes())
+
+    size = os.path.getsize(output_path)
+
+    print(f"Wrote {size / 1e9:.2f} GB ({size // 2:,} tokens) to {output_path}")
+
+
+def test_encode_all_data():
+    if not OUT_PATH.exists():
+        pytest.skip(f"{OUT_PATH} not found")
+
+    for data_file in os.listdir(DATA_PATH):
+        data_file_path = DATA_PATH / data_file
+        print(f"Encoding {data_file_path}")
+        dataset = "tinystories" if "tinystories" in data_file.lower() else "owt"
+        _encode_data_file(dataset, data_file_path, data_file.replace(".txt", ".ids.bin"))
+
+
+def test_encode_sanity_check():
+    if not OUT_PATH.exists():
+        pytest.skip(f"{OUT_PATH} not found")
+
+    for name, path in [
+        ("ts_train", OUT_PATH / "TinyStoriesV2-GPT4-train.ids.bin"),
+        ("ts_valid", OUT_PATH / "TinyStoriesV2-GPT4-valid.ids.bin"),
+        ("owt_train", OUT_PATH / "owt_train.ids.bin"),
+        ("owt_valid", OUT_PATH / "owt_valid.ids.bin"),
+    ]:
+        data = np.memmap(path, dtype=np.uint16, mode="r")
+        print(f"{name:12s}: {len(data):>14,} tokens, max_id={data[:1_000_000].max()}, min_id={data[:1_000_000].min()}")
