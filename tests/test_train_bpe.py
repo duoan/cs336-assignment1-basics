@@ -87,10 +87,27 @@ def test_train_bpe_special_tokens(snapshot):
         },
     )
 
-def test_train_bpe_tinystories():
+def test_train_bpe_tinystories_rust():
     input_path = DATA_PATH / "TinyStoriesV2-GPT4-train.txt"
     vocab, merges = run_train_bpe(
         input_path=input_path,
         vocab_size=1000,
+        special_tokens=["<|endoftext|>"],
+    )
+
+def test_train_bpe_tinystories_python():
+    input_path = DATA_PATH / "TinyStoriesV2-GPT4-train.txt"
+    vocab, merges = run_train_bpe(
+        input_path=input_path,
+        vocab_size=1000,
+        special_tokens=["<|endoftext|>"],
+        using_rust=False,
+    )
+
+def test_train_bpe_expts_owt():
+    input_path = DATA_PATH / "owt_train.txt"
+    vocab, merges = run_train_bpe(
+        input_path=input_path,
+        vocab_size=32000,
         special_tokens=["<|endoftext|>"],
     )

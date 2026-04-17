@@ -602,6 +602,7 @@ def run_train_bpe(
     vocab_size: int,
     special_tokens: list[str],
     chunk_size: int = 16 * 1024 * 1024, # 16MB buffer
+    using_rust: bool = True,
     **kwargs,
 ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
     """Given the path to an input corpus, run train a BPE tokenizer and
@@ -625,7 +626,15 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    # Initilize vocabulary 
+    # Initilize vocabulary
+    if using_rust:
+        try:
+            from cs336_basics._rust import run_train_bpe
+            logger.info("Running BPE training with Rust implementation.")
+            return run_train_bpe(input_path, vocab_size, special_tokens, chunk_size)
+        except:
+            logger.warning("Rust lib not built, will use python implementation.")
+
     vocab: dict[int, bytes] = {idx: token.encode('utf-8') for idx, token in enumerate(special_tokens)}
     special_bytes_set = set(vocab.values())
 
@@ -640,12 +649,6 @@ def run_train_bpe(
 
     # Step2, Pre-tokenization
     word_counts = Counter()
-    special_pattern = None
-    special_tokens_set = None
-    if special_tokens:
-        special_pattern = regex.compile("(" + "|".join(regex.escape(tok) for tok in special_tokens) + ")")
-        special_tokens_set = set(special_tokens)
-
     current_splits: dict[tuple[bytes, ...], int] = defaultdict(int)
 
     num_workers = max(1, multiprocessing.cpu_count() - 1)
@@ -686,58 +689,75 @@ def run_train_bpe(
             current_splits[tuple(bytes([b]) for b in word.encode("utf-8", errors="replace"))] = count
     
     # Merges
+    logger.info("Initializing incremental data structure for merging...")
+    pair_freq: dict[tuple[bytes, bytes], int] = defaultdict(int)
+    pair2words: dict[tuple[bytes, bytes], set[tuple[bytes,...]]] = defaultdict(set)
+
+    for word_tuple, count in current_splits.items():
+        if len(word_tuple) < 2:
+            continue
+        for i in range(len(word_tuple) - 1):
+            pair = (word_tuple[i], word_tuple[i + 1])
+            pair_freq[pair] += count
+            pair2words[pair].add(word_tuple)
+
     merges: list[tuple[bytes, bytes]] = []
     num_merges = vocab_size - len(vocab)
-
-    def get_pair_freq(splits):
-        pair_freq: dict[tuple[bytes, bytes], int] = defaultdict(int)
-        for byte_tuple, freq in splits.items():
-            for i in range(len(byte_tuple) - 1):
-                pair_freq[(byte_tuple[i], byte_tuple[i + 1])] += freq
-
-        return pair_freq
-    
-
-    def merge_pair(splits: dict[tuple[bytes,...], int], pair_to_merge: tuple[bytes, bytes]):
-        new_splits = {}
-        (first_, second_) = pair_to_merge
-        merged_token = first_ + second_
-        for word_tuple, freq in splits.items():
-            symbols = list(word_tuple)
-            new_symbols = []
-            i = 0
-            while i < len(symbols):
-                if i < len(symbols) - 1 and symbols[i] == first_ and symbols[i + 1] == second_:
-                    new_symbols.append(merged_token)
-                    i += 2
-                else:
-                    new_symbols.append(symbols[i])
-                    i += 1
-            key = tuple(new_symbols)
-            new_splits[key] = new_splits.get(key, 0) + freq
-        
-        return new_splits
-
-
     next_vocab_idx = len(vocab)
 
     for i in range(num_merges):
-        logger.debug(f"Merge iteration {i} / {num_merges}")
-        pair_freq = get_pair_freq(current_splits)
-
+        
         if not pair_freq:
             break
 
         # find the most common pair
         best_pair = max(pair_freq.items(), key=lambda kv: (kv[1], kv[0]))[0]
         best_freq = pair_freq[best_pair]
-        logger.debug(f"    Found best pair: {best_pair} with frequency {best_freq:,}")
+        
+        if best_freq == 0:
+            break
 
         # merge the best pair into a new token
         new_token= best_pair[0] + best_pair[1]
-        logger.debug(f"    Merging {best_pair} into `{new_token}`")
-        current_splits = merge_pair(current_splits, best_pair)
-        # print(f"    Splits after merged: {current_splits}")
+
+        if (i + 1) % 100 == 0 or i == num_merges - 1:
+            logger.debug(f"Merge iteration {i + 1} / {num_merges}")
+            logger.debug(f"    Found best pair: {best_pair} with frequency {best_freq:,}")
+            logger.debug(f"    Merging {best_pair} into `{new_token}`")
+        
+        words_to_update = list(pair2words[best_pair])
+
+        for word_tuple in words_to_update:
+            count = current_splits[word_tuple]
+
+            for j in range(len(word_tuple) - 1):
+                old_pair = (word_tuple[j], word_tuple[j + 1])
+                pair_freq[old_pair] -= count
+                if pair_freq[old_pair] <= 0:
+                    del pair_freq[old_pair]
+                if word_tuple in pair2words[old_pair]:
+                    pair2words[old_pair].remove(word_tuple)
+            
+            del current_splits[word_tuple]
+
+            new_word_list = []
+            j = 0
+            while j < len(word_tuple):
+                if j < len(word_tuple) -1 and word_tuple[j] == best_pair[0] and word_tuple[j + 1] == best_pair[1]:
+                    new_word_list.append(new_token)
+                    j += 2
+                else:
+                    new_word_list.append(word_tuple[j])
+                    j += 1
+            
+            new_word_tuple = tuple(new_word_list)
+
+            current_splits[new_word_tuple] = current_splits.get(new_word_tuple, 0) + count
+
+            for j in range(len(new_word_tuple) - 1):
+                new_pair = (new_word_tuple[j], new_word_tuple[j + 1])
+                pair_freq[new_pair] += count
+                pair2words[new_pair].add(new_word_tuple)
 
         # update vocab with the new token
         vocab[next_vocab_idx] = new_token
@@ -745,7 +765,5 @@ def run_train_bpe(
 
         # store the merge
         merges.append(best_pair)
-
-        logger.debug("-" * 30)
-        
+    
     return vocab, merges
