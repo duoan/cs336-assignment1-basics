@@ -27,7 +27,7 @@ class Tokenizer:
             sorted_tokens = sorted(special_tokens, key=len, reverse=True)
             self._special_pattern = regex.compile("(" + "|".join(regex.escape(tok) for tok in sorted_tokens) + ")")
 
-        pass
+        self._pool = ThreadPoolExecutor(max(1, multiprocessing.cpu_count() - 1))
 
     @classmethod
     def from_files(
@@ -49,6 +49,26 @@ class Tokenizer:
 
         return Tokenizer(vocab, merges, special_tokens)
 
+    def _merge_word_token_tuple(self, split):
+        word_token_tuple = tuple(bytes([b]) for b in split.encode("utf-8"))
+        for merge in self.merges:
+            new_word_tokens: list[bytes] = []
+            token = merge[0] + merge[1]
+            i = 0
+            while i < len(word_token_tuple):
+                if (
+                    i < len(word_token_tuple) - 1
+                    and merge[0] == word_token_tuple[i]
+                    and merge[1] == word_token_tuple[i + 1]
+                ):
+                    new_word_tokens.append(token)
+                    i += 2
+                else:
+                    new_word_tokens.append(word_token_tuple[i])
+                    i += 1
+            word_token_tuple = tuple(new_word_tokens)
+        return word_token_tuple
+
     def encode(self, text: str) -> list[int]:
         if not text:
             return []
@@ -69,43 +89,18 @@ class Tokenizer:
 
         # merge
         merged_word_tokens = []
-        num_works = max(1, multiprocessing.cpu_count() - 1)
+        futures = []
+        for split in splits:
+            if split in self._special_tokens_set:
+                futures.append(None)
+            else:
+                futures.append(self._pool.submit(self._merge_word_token_tuple, split))
 
-        def merge_work_token_tuple(split):
-            word_token_tuple = tuple(bytes([b]) for b in split.encode("utf-8"))
-            for merge in self.merges:
-                new_word_tokens: list[bytes] = list()
-                token = merge[0] + merge[1]
-                i = 0
-                while i < len(word_token_tuple):
-                    if (
-                        i < len(word_token_tuple) - 1
-                        and merge[0] == word_token_tuple[i]
-                        and merge[1] == word_token_tuple[i + 1]
-                    ):
-                        new_word_tokens.append(token)
-                        i += 2
-                    else:
-                        new_word_tokens.append(word_token_tuple[i])
-                        i += 1
-
-                word_token_tuple = tuple(new_word_tokens)
-
-            return word_token_tuple
-
-        with ThreadPoolExecutor(num_works) as pool:
-            futures = []
-            for split in splits:
-                if split in self._special_tokens_set:
-                    futures.append(None)
-                else:
-                    futures.append(pool.submit(merge_work_token_tuple, split))
-
-            for i, future in enumerate(futures):
-                if future is None:
-                    merged_word_tokens.append(splits[i].encode("utf-8"))
-                else:
-                    merged_word_tokens.extend(list(future.result()))
+        for i, future in enumerate(futures):
+            if future is None:
+                merged_word_tokens.append(splits[i].encode("utf-8"))
+            else:
+                merged_word_tokens.extend(list(future.result()))
 
         idxs: list[int] = []
 
