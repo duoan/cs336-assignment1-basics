@@ -1,6 +1,6 @@
 import einx
 import torch
-from jaxtyping import Bool, Float
+from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 
@@ -32,3 +32,25 @@ def scaled_dot_product_attention(
     scores = softmax(scores)
     attention = einx.dot(" ... queries keys,  ... keys d_v -> ... queries d_v", scores, V)
     return attention
+
+
+def cross_entropy(
+    logits: Float[Tensor, " ... vocab_size"],  # current sequence logits, next token prediction o_i
+    targets: Int[Tensor, " ..."],  # next token actual tokens x_(i+1)
+) -> Float[Tensor, " ..."]:
+    """Calculate the cross entropy loss for a given batch sequence next token prediction"""
+    vocab_size = logits.size(-1)
+    logits = logits.view(-1, vocab_size)
+
+    # log(softmax(x_i)) = log(exp(x_i - max) / sum(exp(x_j - max)))
+    #                = (x_i - max) - log(sum(exp(x_j - max)))
+    logits = logits - logits.max(dim=-1)[0].unsqueeze(-1)
+    log_probs = logits - torch.exp(logits).sum(dim=-1, keepdim=True).log()
+
+    targets = targets.view(-1)
+
+    return -log_probs[range(len(targets)), targets].mean()
+
+
+def clip_gradients(grad, max=1e-6):
+    pass

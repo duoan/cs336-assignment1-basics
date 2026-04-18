@@ -26,6 +26,7 @@ class MultiHeadSelfAttention(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_head = d_model // num_heads
+        nn.CrossEntropyLoss
 
         if theta is not None and max_seq_len is not None:
             self.rope = RotaryPositionalEmbedding(theta, self.d_head, max_seq_len, device)
