@@ -17,6 +17,10 @@ class PositionWiseFeedForwardNetwork(nn.Module):
         self.active = silu
 
     def forward(self, x: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
+        """
+        assume d_ff = 8/3 * d_model
+        activation: 4xBxSxD + 4xBxSxDx8/3 + 4xBxSxDx8/3 + 4xBxSxDx8/3 = 4xBxSxDx(1+8)= 36BSD bytes
+        """
         x_w1 = self.active(self.w1(x))
         x_w3 = self.w3(x)
         x_w1_w3 = einx.dot("... d_ff, ... d_ff -> ... d_ff", x_w1, x_w3)

@@ -21,7 +21,12 @@ def scaled_dot_product_attention(
     V: Float[Tensor, " ... keys d_v"],
     mask: Bool[Tensor, " ... queries keys"] | None = None,
 ) -> Float[Tensor, " ... queries d_v"]:
+    """
+    activation: 4BHSS + 4BHSS + 4BSD
+    """
     d_k = Q.size(-1)
+
+    # activation: (B, H, S, S) -> 4BHSS bytes
     scores: Float[Tensor, " ... queries keys"] = (
         einx.dot(" ... queries d_k,  ... keys d_k -> ... queries keys", Q, K) * d_k**-0.5
     )
@@ -29,8 +34,10 @@ def scaled_dot_product_attention(
     if mask is not None:
         scores = scores.masked_fill(~mask, float("-inf"))
 
-    scores = softmax(scores)
-    attention = einx.dot(" ... queries keys,  ... keys d_v -> ... queries d_v", scores, V)
+    # activation: (B, H, S, S) -> 4BHSS bytes
+    probs = softmax(scores)
+    # activation" (B, H, S, D) -> 4BSD bytes
+    attention = einx.dot(" ... queries keys,  ... keys d_v -> ... queries d_v", probs, V)
     return attention
 
 

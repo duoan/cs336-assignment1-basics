@@ -26,6 +26,9 @@ class RotaryPositionalEmbedding(nn.Module):
         max_seq_len: int,
         device: torch.device | None = None,
     ):
+        """
+        buffer memory: max_seq_len * d_k
+        """
         super().__init__()
         assert d_k % 2 == 0, "d_k must be even for RoPE"
 
@@ -61,21 +64,14 @@ class RotaryPositionalEmbedding(nn.Module):
         cos = self.cos_cached[token_positions]
         sin = self.sin_cached[token_positions]
 
-        # 5. Split x into even and odd dimensions (interleaved RoPE convention).
-        # Each adjacent pair (x_{2i}, x_{2i+1}) forms a 2D vector to be rotated.
-        x_even = x[..., 0::2]  # (..., seq_len, d_k/2): x_0, x_2, x_4, ...
-        x_odd = x[..., 1::2]  # (..., seq_len, d_k/2): x_1, x_3, x_5, ...
+        # pre-allocate memory
+        # activation: (batch_size, seq_len, d_k)
+        out = torch.empty_like(x)
 
-        # 6. Apply 2D rotation:
-        #   x'_{2i}   = x_{2i} * cos - x_{2i+1} * sin
-        #   x'_{2i+1} = x_{2i} * sin + x_{2i+1} * cos
-        rotated_even = x_even * cos - x_odd * sin
-        rotated_odd = x_even * sin + x_odd * cos
-
-        # 7. Interleave the rotated halves back into the original layout.
-        # stack -> (..., seq_len, d_k/2, 2), then flatten the last two dims -> (..., seq_len, d_k)
-        out = torch.stack([rotated_even, rotated_odd], dim=-1)
-        out = out.flatten(-2)
+        # x'_{2i}   = x_{2i} * cos - x_{2i+1} * sin
+        # x'_{2i+1} = x_{2i} * sin + x_{2i+1} * cos
+        out[..., 0::2] = x[..., 0::2] * cos - x[..., 1::2] * sin
+        out[..., 1::2] = x[..., 0::2] * sin + x[..., 1::2] * cos
 
         # Preserve input dtype (cos/sin are float32 for numerical stability).
         return out.to(x.dtype)

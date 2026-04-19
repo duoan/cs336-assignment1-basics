@@ -15,10 +15,17 @@ class RMSNorm(nn.Module):
 
         # upcast to float32 to prevent overflow
         if original_dtype != torch.float32:
+            # activation: B x L x D
             x = x.to(dtype=torch.float32, non_blocking=True)
 
-        rms = x.pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
-        out = x * rms * self.weight
+        # activation: ( 3 x B x L x D + B x L ) x 4 bytes ~= 12*B*L*D bytes
+        # x: (B x L x D)
+        # inv_rms: (B x L)
+        # x_norm: (B x L x D)
+        # out: (B x L x D)
+        inv_rms = x.pow(2).mean(-1, keepdim=True).add_(self.eps).rsqrt_()
+        x_norm = x * inv_rms
+        out = x_norm * self.weight
 
         # cast to original dtype
         if original_dtype != torch.float32:

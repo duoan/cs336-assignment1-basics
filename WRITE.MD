@@ -44,3 +44,41 @@ input strings.
     - Why? The function decodes each byte independently, but UTF-8 is a variable-width encoding where a single character can span 1–4 bytes. Any non-ASCII character is encoded as a multi-byte sequence whose individual bytes are not valid standalone UTF-8 — they're continuation bytes (0x80–0xBF) that only have meaning as part of a group. Calling `.decode("utf-8")` on one of those bytes alone raises `UnicodeDecodeError`.
 
 
+
+## Problem (adamw_accounting): Resource accouting for training with AdawW
+
+Let us compute how much memory and compute running AdamW requires. Assume we are using
+float32 for every tensor.
+
+a). How much peak memory does running AdamW require?
+
+- float32 -> 4 bytes
+
+### Parameters
+#### Transformer Block 
+
+> Parameters: 4D + 16D^2 + 4D + 32D^2 => 8D + 48D^2
+> Activation: 12*B*S*D + 4*B*S + 20*B*S*D + 8*B*H*S*S + 12*B*S*D + 36*B*S*D
+> => 4BS + (12 + 20 + 12 + 36)BSD + 8*B*H*S*S
+> => 4BS + 80BSD + 8BHSS
+
+- ln1: RMSNorm: (d_model,) parameters
+    - parameters: 4D bytes
+    - activation: 12*B*L*D bytes
+- attn: MultiHeadSelfAttention
+    - parameters: 4*4D*D => 16 D*D bytes
+    - activation: 4BS + 20BSD + 8BHSS bytes
+    - self.rope: RotaryPositionalEmbedding(theta, self.d_head, max_seq_len) -> buffer: 
+    - self.q_proj = Linear(d_model, d_model) -> 
+    - self.k_proj = Linear(d_model, d_model) -> 
+    - self.v_proj = Linear(d_model, d_model) ->
+    - self.output_proj = Linear(d_model, d_model)
+- ln2: RMSNorm: (d_model,) parameters
+    - parameters: 4D bytes
+    - activation: 12*B*S*D bytes
+- ffn: 
+    - parameters: 8/3 * D * D * 3 * 4 bytes => 32 D*D bytes
+    - activation: 36 B*S*D bytes
+    - self.w1 = Linear(d_ff, d_model, device=device, dtype=dtype)
+    - self.w2 = Linear(d_model, d_ff, device=device, dtype=dtype)
+    - self.w3 = Linear(d_ff, d_model, device=device, dtype=dtype)

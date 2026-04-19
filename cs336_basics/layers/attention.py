@@ -26,12 +26,12 @@ class MultiHeadSelfAttention(nn.Module):
         self.d_model = d_model
         self.num_heads = num_heads
         self.d_head = d_model // num_heads
-        nn.CrossEntropyLoss
 
         if theta is not None and max_seq_len is not None:
             self.rope = RotaryPositionalEmbedding(theta, self.d_head, max_seq_len, device)
 
         # all parameter shape is (d_out, d_in)
+        # parameters: d_model x d_model * 4
         self.q_proj = Linear(d_model, d_model, device=device, dtype=dtype)
         self.k_proj = Linear(d_model, d_model, device=device, dtype=dtype)
         self.v_proj = Linear(d_model, d_model, device=device, dtype=dtype)
@@ -42,11 +42,20 @@ class MultiHeadSelfAttention(nn.Module):
         x: Float[Tensor, "batch_size seq_len d_model"],
         token_positions: Int[Tensor, "... seq_len"] | None = None,
     ) -> Float[Tensor, "batch_size seq_len d_model"]:
+        """
+        activation: 4BSD + 4BS + 12BSD + 4BHSS + 4BHSS + 4BSD => 4BS + 20BSD + 8BHSS
+        """
+
         seq_len = x.size(1)
+
+        # activation: x: 4BSD bytes
+
+        # activation: 4BS bytes
         mask: Bool[Tensor, "batch_size seq_len"] = torch.tril(
             torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device)
         )
 
+        # activation: 12BSD bytes
         q = self.q_proj(x)
         k = self.k_proj(x)
         v = self.v_proj(x)
@@ -59,6 +68,8 @@ class MultiHeadSelfAttention(nn.Module):
             assert token_positions.size(1) == seq_len
             q = self.rope(q, token_positions)
             k = self.rope(k, token_positions)
+
+        # activation: 4BHSS + 4BHSS + 4BSD
 
         attention = scaled_dot_product_attention(q, k, v, mask)  # (b h s d)
         attention = einx.id("b h s d -> b s (h d)", attention)
