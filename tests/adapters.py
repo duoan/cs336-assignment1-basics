@@ -16,7 +16,7 @@ from torch import Tensor
 
 from cs336_basics import functions, layers
 from cs336_basics.consts import PAT
-from cs336_basics.optimizers import AdamW
+from cs336_basics.optimizers import AdamW, get_lr_cosine_schedule
 
 
 def run_linear(
@@ -559,7 +559,13 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    raise NotImplementedError
+    return get_lr_cosine_schedule(
+        it,
+        min_learning_rate,
+        max_learning_rate,
+        warmup_iters,
+        cosine_cycle_iters,
+    )
 
 
 def run_save_checkpoint(

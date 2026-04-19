@@ -4,6 +4,21 @@ from collections.abc import Callable
 import torch
 
 
+def get_lr_cosine_schedule(
+    t: int,
+    lr_min: float,
+    lr_max: float,
+    t_w: int,
+    t_c: int,
+) -> float:
+    if t < t_w:
+        return t / t_w * lr_max
+    elif t >= t_w and t <= t_c:
+        return lr_min + 0.5 * (1 + math.cos((t - t_w) / (t_c - t_w) * math.pi)) * (lr_max - lr_min)
+    else:
+        return lr_min
+
+
 class AdamW(torch.optim.Optimizer):
     def __init__(
         self,
