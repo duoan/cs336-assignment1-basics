@@ -30,7 +30,6 @@ def train_step(model, optimizer, compute_loss_fn, all_params, max_l2_norm, micro
     optimizer.zero_grad(set_to_none=True)
     total_loss = 0.0
     for inputs, targets in micro_batches:
-        torch.compiler.cudagraph_mark_step_begin()
         loss = compute_loss_fn(model, inputs, targets)
         (loss / grad_accum_steps).backward()
         total_loss += loss.item()
@@ -132,6 +131,9 @@ def train(cfg: DictConfig):
 
     if cfg.training.get("compile", False):
         compile_mode = cfg.training.get("compile_mode", "default")
+        if grad_accum_steps > 1 and compile_mode == "max-autotune":
+            compile_mode = "max-autotune-no-cudagraphs"
+            print(f"grad_accum_steps={grad_accum_steps} > 1, switched compile_mode to {compile_mode}")
         if torch.cuda.is_available():
             compute_loss_fn = torch.compile(compute_loss, mode=compile_mode)
         else:
