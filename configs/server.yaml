@@ -7,3 +7,4 @@ training:
   eval_steps: 200
   compile: true
   num_workers: 16
+  gpu_peak_tflops: 91.1

@@ -1,5 +1,8 @@
+import time
+
 import hydra
 import torch
+from torch.profiler import ProfilerActivity, profile, schedule
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader, RandomSampler
 from tqdm import tqdm
@@ -75,6 +78,33 @@ def train(cfg: DictConfig):
     total_params = sum(p.numel() for p in model.parameters())
     print(f"total_params={total_params:,}")
 
+    gpu_peak_flops = t.get("gpu_peak_tflops", None)
+    if gpu_peak_flops is not None:
+        gpu_peak_flops = gpu_peak_flops * 1e12
+
+    def measure_flops():
+        dummy_input = torch.randint(0, m.vocab_size, (t.batch_size, m.context_length), device=device)
+        dummy_target = torch.randint(0, m.vocab_size, (t.batch_size, m.context_length), device=device)
+
+        activities = [ProfilerActivity.CPU]
+        if torch.cuda.is_available():
+            activities.append(ProfilerActivity.CUDA)
+
+        with profile(activities=activities, with_flops=True) as prof:
+            logits = model(dummy_input)
+            loss = cross_entropy(logits, dummy_target)
+            loss.backward()
+
+        fwd_bwd_flops = sum(e.flops for e in prof.key_averages() if e.flops > 0)
+        return fwd_bwd_flops
+
+    flops_per_step = measure_flops()
+    flops_per_step_approx = 6 * total_params * tokens_per_step
+    print(f"flops_per_step (profiler): {flops_per_step:,.0f}")
+    print(f"flops_per_step (6NBS approx): {flops_per_step_approx:,.0f}")
+    print(f"ratio (profiler / approx): {flops_per_step / flops_per_step_approx:.2f}")
+    model.zero_grad(set_to_none=True)
+
     if cfg.training.get("compile", False):
         if torch.cuda.is_available():
             model = torch.compile(model)
@@ -107,6 +137,7 @@ def train(cfg: DictConfig):
             count += 1
         return total_loss / count
 
+    step_time = time.perf_counter()
     for step, (inputs, targets) in enumerate(tqdm(train_dataloader, initial=start_step, total=max_steps)):
         if step < start_step:
             continue
@@ -125,8 +156,18 @@ def train(cfg: DictConfig):
         optimizer.step()
 
         train_loss = loss.item()
+        now = time.perf_counter()
+        dt = now - step_time
+        step_time = now
+        tokens_per_sec = tokens_per_step / dt if dt > 0 else 0
+
         if (step + 1) % t.log_interval == 0:
-            tqdm.write(f"step {step + 1}, lr={lr:.6f}, train_loss={train_loss:.4f}")
+            mfu_str = ""
+            if gpu_peak_flops is not None and dt > 0:
+                mfu = flops_per_step / (dt * gpu_peak_flops) * 100
+                mfu_str = f", mfu={mfu:.1f}%"
+            tqdm.write(f"step {step+1}, lr={lr:.6f}, train_loss={train_loss:.4f}, "
+                       f"tok/s={tokens_per_sec:,.0f}, dt={dt*1000:.0f}ms{mfu_str}")
         if (step + 1) % t.eval_interval == 0:
             val_loss = evaluate()
             tqdm.write(f"step {step + 1}, val_loss={val_loss:.4f}")
