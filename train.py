@@ -2,8 +2,8 @@ import time
 
 import hydra
 import torch
-from torch.profiler import ProfilerActivity, profile, schedule
 from omegaconf import DictConfig, OmegaConf
+from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import DataLoader, RandomSampler
 from tqdm import tqdm
 
@@ -34,8 +34,10 @@ def train(cfg: DictConfig):
     warmup_iters = int(max_steps * t.warmup_ratio)
     cosine_cycle_iters = max_steps
 
-    print(f"tokens_per_step={tokens_per_step:,}, max_steps={max_steps:,}, "
-          f"warmup_iters={warmup_iters:,}, total_tokens={t.total_tokens:,}")
+    print(
+        f"tokens_per_step={tokens_per_step:,}, max_steps={max_steps:,}, "
+        f"warmup_iters={warmup_iters:,}, total_tokens={t.total_tokens:,}"
+    )
 
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
@@ -63,14 +65,20 @@ def train(cfg: DictConfig):
 
     train_sampler = RandomSampler(train_dataset, replacement=True, num_samples=max_steps * t.batch_size)
     train_dataloader = DataLoader(
-        train_dataset, batch_size=t.batch_size, sampler=train_sampler,
-        num_workers=num_workers, pin_memory=pin_memory,
+        train_dataset,
+        batch_size=t.batch_size,
+        sampler=train_sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
 
     valid_sampler = RandomSampler(valid_dataset, replacement=True, num_samples=t.eval_steps * t.batch_size)
     valid_dataloader = DataLoader(
-        valid_dataset, batch_size=t.batch_size, sampler=valid_sampler,
-        num_workers=num_workers, pin_memory=pin_memory,
+        valid_dataset,
+        batch_size=t.batch_size,
+        sampler=valid_sampler,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
 
     model = layers.model.TransformerLanguageModel(**model_kwargs)
@@ -168,16 +176,22 @@ def train(cfg: DictConfig):
             if gpu_peak_flops is not None:
                 mfu = flops_per_step / (avg_dt * gpu_peak_flops) * 100
                 mfu_str = f", mfu={mfu:.1f}%"
-            tqdm.write(f"step {step+1}, lr={lr:.6f}, train_loss={train_loss:.4f}, "
-                       f"tok/s={tokens_per_sec:,.0f}, avg_dt={avg_dt*1000:.0f}ms{mfu_str}")
+            tqdm.write(
+                f"step {step + 1}, lr={lr:.6f}, train_loss={train_loss:.4f}, "
+                f"tok/s={tokens_per_sec:,.0f}, avg_dt={avg_dt * 1000:.0f}ms{mfu_str}"
+            )
             interval_start = now
             interval_steps = 0
         if (step + 1) % t.eval_interval == 0:
             val_loss = evaluate()
             tqdm.write(f"step {step + 1}, val_loss={val_loss:.4f}")
+            interval_start = time.perf_counter()
+            interval_steps = 0
         if (step + 1) % t.save_interval == 0:
             checkpointing.save_checkpoint(model, optimizer, step, f"./out/checkpoint_{step + 1}.pt")
             tqdm.write(f"step {step + 1}, checkpoint saved")
+            interval_start = time.perf_counter()
+            interval_steps = 0
 
 
 if __name__ == "__main__":

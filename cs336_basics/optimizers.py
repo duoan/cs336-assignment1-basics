@@ -43,6 +43,7 @@ class AdamW(torch.optim.Optimizer):
 
         super().__init__(params, defaults)
 
+    @torch.no_grad()
     def step(self, closure: Callable | None = None):
         loss = None if closure is None else closure
         for group in self.param_groups:
@@ -57,19 +58,19 @@ class AdamW(torch.optim.Optimizer):
                 state = self.state[p]  # Get state associated with p.
                 t = state.get("t", 1)  # Get iteration number from the state, or 1.
 
-                m = state.get("m", torch.nn.Parameter(torch.zeros_like(p, device=p.device, dtype=torch.float32)))
-                v = state.get("v", torch.nn.Parameter(torch.zeros_like(p, device=p.device, dtype=torch.float32)))
+                if "m" not in state:
+                    state["m"] = torch.zeros_like(p, dtype=torch.float32)
+                    state["v"] = torch.zeros_like(p, dtype=torch.float32)
 
-                lr_t = (
-                    lr * math.sqrt(1.0 - beta_2**t) / (1.0 - beta_1**t)
-                )  # Compute adjusted learning rate for iteration t
-                p.data -= lr * weight_decay * p.data  # Apply weight decay
+                m = state["m"]
+                v = state["v"]
                 grad = p.grad.data  # Get the gradient of loss with respect to p.
-                m = beta_1 * m + (1.0 - beta_1) * grad  # Update the first moment estimate
-                v = beta_2 * v + (1.0 - beta_2) * grad**2  # Update the second moment estimate
-                p.data -= lr_t / torch.sqrt(v + eps) * m  # Apply mement-adjusted weight updates
-                state["m"] = m  # store the first moment
-                state["v"] = v  # store the second moment
+
+                lr_t = lr * math.sqrt(1.0 - beta_2**t) / (1.0 - beta_1**t)  # Compute adjusted learning rate for iteration t
+                p.data -= lr * weight_decay * p.data  # Apply weight decay
+                m.mul_(beta_1).add_(grad, alpha=1.0 - beta_1)  # Update the first moment estimate (in-place)
+                v.mul_(beta_2).addcmul_(grad, grad, value=1.0 - beta_2)  # Update the second moment estimate (in-place)
+                p.data -= lr_t * m / (v.sqrt() + eps)  # Apply moment-adjusted weight updates
                 state["t"] = t + 1
 
         return loss
