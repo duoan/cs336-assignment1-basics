@@ -116,17 +116,20 @@ def train(cfg: DictConfig):
     print(f"ratio (profiler / approx): {flops_per_step / flops_per_step_approx:.2f}")
     model.zero_grad(set_to_none=True)
 
+    all_params = list(model.parameters())
+
+    def compute_loss(inputs, targets):
+        logits = model(inputs)
+        return cross_entropy(logits, targets)
+
     if cfg.training.get("compile", False):
         compile_mode = cfg.training.get("compile_mode", "default")
         if torch.cuda.is_available():
-            model = torch.compile(model, mode=compile_mode)
+            compiled_compute_loss = torch.compile(compute_loss, mode=compile_mode)
         else:
-            model = torch.compile(model, backend="aot_eager")
-
-    compiled_cross_entropy = cross_entropy
-    compiled_clip_gradient = clip_gradient
-
-    all_params = list(model.parameters())
+            compiled_compute_loss = torch.compile(compute_loss, backend="aot_eager")
+    else:
+        compiled_compute_loss = compute_loss
 
     optimizer = AdamW(
         params=all_params,
@@ -148,8 +151,7 @@ def train(cfg: DictConfig):
         for inputs, targets in valid_dataloader:
             inputs = inputs.to(device)
             targets = targets.to(device)
-            logits = model(inputs)
-            loss = compiled_cross_entropy(logits, targets)
+            loss = compiled_compute_loss(inputs, targets)
             total_loss += loss.item()
             count += 1
         return total_loss / count
@@ -175,10 +177,9 @@ def train(cfg: DictConfig):
         optimizer.zero_grad(set_to_none=True)
         inputs = inputs.to(device)
         targets = targets.to(device)
-        logits = model(inputs)
-        loss = compiled_cross_entropy(logits, targets)
+        loss = compiled_compute_loss(inputs, targets)
         loss.backward()
-        compiled_clip_gradient(all_params, max_l2_norm=t.max_l2_norm)
+        clip_gradient(all_params, max_l2_norm=t.max_l2_norm)
         optimizer.step()
 
         train_loss = loss.item()
