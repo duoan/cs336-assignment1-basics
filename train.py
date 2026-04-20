@@ -26,6 +26,14 @@ def train(cfg: DictConfig):
     m = cfg.model
     t = cfg.training
 
+    tokens_per_step = t.batch_size * m.context_length
+    max_steps = t.total_tokens // tokens_per_step
+    warmup_iters = int(max_steps * t.warmup_ratio)
+    cosine_cycle_iters = max_steps
+
+    print(f"tokens_per_step={tokens_per_step:,}, max_steps={max_steps:,}, "
+          f"warmup_iters={warmup_iters:,}, total_tokens={t.total_tokens:,}")
+
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -50,7 +58,7 @@ def train(cfg: DictConfig):
     num_workers = t.get("num_workers", 4 if torch.cuda.is_available() else 0)
     pin_memory = torch.cuda.is_available()
 
-    train_sampler = RandomSampler(train_dataset, replacement=True, num_samples=t.max_steps * t.batch_size)
+    train_sampler = RandomSampler(train_dataset, replacement=True, num_samples=max_steps * t.batch_size)
     train_dataloader = DataLoader(
         train_dataset, batch_size=t.batch_size, sampler=train_sampler,
         num_workers=num_workers, pin_memory=pin_memory,
@@ -99,11 +107,11 @@ def train(cfg: DictConfig):
             count += 1
         return total_loss / count
 
-    for step, (inputs, targets) in enumerate(tqdm(train_dataloader, initial=start_step, total=t.max_steps)):
+    for step, (inputs, targets) in enumerate(tqdm(train_dataloader, initial=start_step, total=max_steps)):
         if step < start_step:
             continue
 
-        lr = get_lr_cosine_schedule(step, t.min_lr, t.max_lr, t.warmup_iters, t.cosine_cycle_iters)
+        lr = get_lr_cosine_schedule(step, t.min_lr, t.max_lr, warmup_iters, cosine_cycle_iters)
         for group in optimizer.param_groups:
             group["lr"] = lr
 

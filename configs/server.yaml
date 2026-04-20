@@ -4,9 +4,6 @@ defaults:
 training:
   dtype: bfloat16
   batch_size: 512
-  max_steps: 80000
-  warmup_iters: 2000
-  cosine_cycle_iters: 80000
   eval_steps: 200
   compile: true
   num_workers: 16
