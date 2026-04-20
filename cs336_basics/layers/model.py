@@ -1,5 +1,6 @@
 from typing import Any
 
+import torch
 import torch.nn as nn
 from jaxtyping import Float, Int
 from torch import Tensor
@@ -48,8 +49,9 @@ class TransformerLanguageModel(nn.Module):
         in_indices: Int[Tensor, "batch_size sequence_length"],
     ) -> Float[Tensor, "batch_size vocab_size"]:
         x = self.token_embeddings(in_indices)
+        token_positions = torch.arange(x.size(1), device=x.device).unsqueeze(0)
         for layer in self.layers:
-            x = layer(x)
+            x = layer(x, token_positions)
         x = self.ln_final(x)
         x = self.lm_head(x)
         return x

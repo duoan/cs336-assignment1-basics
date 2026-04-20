@@ -16,6 +16,7 @@ from cs336_basics.optimizers import AdamW, get_lr_cosine_schedule
 
 def get_device():
     if torch.mps.is_available():
+        torch.nn.utils.clip_grad_norm_
         return "mps"
     if torch.cuda.is_available():
         return "cuda"

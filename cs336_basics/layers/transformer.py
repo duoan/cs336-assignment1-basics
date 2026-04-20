@@ -1,4 +1,3 @@
-import einx
 import torch
 import torch.nn as nn
 from jaxtyping import Float
@@ -38,9 +37,9 @@ class TransformerBlock(nn.Module):
         self.ln2 = RMSNorm(d_model, device=device, dtype=dtype)
         self.ffn = PositionWiseFeedForwardNetwork(d_model=d_model, d_ff=d_ff, device=device, dtype=dtype)
 
-    def forward(self, x: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
-        seq_len = x.size(1)
-        token_positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
+    def forward(self, x: Float[Tensor, "..."], token_positions=None) -> Float[Tensor, "..."]:
+        if token_positions is None:
+            token_positions = torch.arange(x.size(1), device=x.device).unsqueeze(0)
         x = x + self.attn(self.ln1(x), token_positions)
         x = x + self.ffn(self.ln2(x))
         return x
