@@ -130,6 +130,8 @@ def train(cfg: DictConfig):
             if os.path.exists(cache_dir):
                 shutil.rmtree(cache_dir)
                 print(f"Cleared compile cache: {cache_dir}")
+        if compile_mode == "max-autotune":
+            torch._inductor.config.coordinate_descent_tuning = True
         if torch.cuda.is_available():
             compute_loss_fn = torch.compile(compute_loss, mode=compile_mode)
         else:
