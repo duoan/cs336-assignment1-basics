@@ -157,14 +157,21 @@ def train(cfg: DictConfig):
     gc.disable()
     interval_start = time.perf_counter()
     interval_steps = 0
+    data_time_accum = 0.0
+    compute_time_accum = 0.0
+    data_tick = time.perf_counter()
     for step, (inputs, targets) in enumerate(tqdm(train_dataloader, initial=start_step, total=max_steps)):
+        data_time_accum += time.perf_counter() - data_tick
+
         if step < start_step:
+            data_tick = time.perf_counter()
             continue
 
         lr = get_lr_cosine_schedule(step, t.min_lr, t.max_lr, warmup_iters, cosine_cycle_iters)
         for group in optimizer.param_groups:
             group["lr"] = lr
 
+        compute_tick = time.perf_counter()
         optimizer.zero_grad(set_to_none=True)
         inputs = inputs.to(device)
         targets = targets.to(device)
@@ -175,6 +182,7 @@ def train(cfg: DictConfig):
         optimizer.step()
 
         train_loss = loss.item()
+        compute_time_accum += time.perf_counter() - compute_tick
         interval_steps += 1
 
         if (step + 1) % t.log_interval == 0:
@@ -189,11 +197,16 @@ def train(cfg: DictConfig):
             if gpu_peak_flops is not None:
                 mfu = flops_per_step / (avg_dt * gpu_peak_flops) * 100
                 mfu_str = f", mfu={mfu:.1f}%"
+            avg_data_ms = data_time_accum / interval_steps * 1000
+            avg_compute_ms = compute_time_accum / interval_steps * 1000
             tqdm.write(
                 f"step {step + 1}, lr={lr:.6f}, train_loss={train_loss:.4f}, "
-                f"tok/s={tokens_per_sec:,.0f}, avg_dt={avg_dt * 1000:.0f}ms{mfu_str}"
+                f"tok/s={tokens_per_sec:,.0f}, avg_dt={avg_dt * 1000:.0f}ms{mfu_str}, "
+                f"data={avg_data_ms:.0f}ms, compute={avg_compute_ms:.0f}ms"
             )
             interval_start = now
+            data_time_accum = 0.0
+            compute_time_accum = 0.0
             interval_steps = 0
         if (step + 1) % t.eval_interval == 0:
             gc.collect()
@@ -203,11 +216,17 @@ def train(cfg: DictConfig):
             tqdm.write(f"step {step + 1}, val_loss={val_loss:.4f}")
             interval_start = time.perf_counter()
             interval_steps = 0
+            data_time_accum = 0.0
+            compute_time_accum = 0.0
         if (step + 1) % t.save_interval == 0:
             checkpointing.save_checkpoint(model, optimizer, step, f"./out/checkpoint_{step + 1}.pt")
             tqdm.write(f"step {step + 1}, checkpoint saved")
             interval_start = time.perf_counter()
             interval_steps = 0
+            data_time_accum = 0.0
+            compute_time_accum = 0.0
+
+        data_tick = time.perf_counter()
 
 
 if __name__ == "__main__":
