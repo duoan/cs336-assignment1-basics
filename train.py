@@ -26,6 +26,12 @@ def train(cfg: DictConfig):
     m = cfg.model
     t = cfg.training
 
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.set_float32_matmul_precision("high")
+
     model_kwargs = dict(
         vocab_size=m.vocab_size,
         context_length=m.context_length,
@@ -41,24 +47,31 @@ def train(cfg: DictConfig):
     train_dataset = NumpyBinaryTokenDataset(cfg.data.train_path, context_length=m.context_length)
     valid_dataset = NumpyBinaryTokenDataset(cfg.data.valid_path, context_length=m.context_length)
 
+    num_workers = t.get("num_workers", 4 if torch.cuda.is_available() else 0)
+    pin_memory = torch.cuda.is_available()
+
     train_sampler = RandomSampler(train_dataset, replacement=True, num_samples=t.max_steps * t.batch_size)
-    train_dataloader = DataLoader(train_dataset, batch_size=t.batch_size, sampler=train_sampler, num_workers=0)
+    train_dataloader = DataLoader(
+        train_dataset, batch_size=t.batch_size, sampler=train_sampler,
+        num_workers=num_workers, pin_memory=pin_memory,
+    )
 
     valid_sampler = RandomSampler(valid_dataset, replacement=True, num_samples=t.eval_steps * t.batch_size)
-    valid_dataloader = DataLoader(valid_dataset, batch_size=t.batch_size, sampler=valid_sampler, num_workers=0)
+    valid_dataloader = DataLoader(
+        valid_dataset, batch_size=t.batch_size, sampler=valid_sampler,
+        num_workers=num_workers, pin_memory=pin_memory,
+    )
 
     model = layers.model.TransformerLanguageModel(**model_kwargs)
 
-    if torch.mps.is_available():
-        model = torch.compile(model, backend="aot_eager")
-    elif torch.cuda.is_available():
-        torch.set_float32_matmul_precision("high")
-        model = torch.compile(model)
-    else:
-        model = torch.compile(model)
-
     total_params = sum(p.numel() for p in model.parameters())
     print(f"total_params={total_params:,}")
+
+    if cfg.training.get("compile", False):
+        if torch.cuda.is_available():
+            model = torch.compile(model)
+        else:
+            model = torch.compile(model, backend="aot_eager")
 
     optimizer = AdamW(
         params=model.parameters(),

@@ -24,6 +24,7 @@ training:
   log_interval: 100
   eval_interval: 1000
   save_interval: 10000
+  compile: false
 
 data:
   train_path: ./out/TinyStoriesV2-GPT4-train.ids.bin
