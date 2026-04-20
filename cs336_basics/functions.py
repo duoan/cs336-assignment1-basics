@@ -59,5 +59,19 @@ def cross_entropy(
     return -log_probs[range(len(targets)), targets].mean()
 
 
-def clip_gradients(grad, max=1e-6):
-    pass
+@torch.no_grad()
+def clip_gradient(parameters: list[Float[Tensor, " ..."]], max_l2_norm=1e-6):
+    grads = [p.grad for p in parameters if p.grad is not None]
+    if not grads:
+        return 0.0
+
+    # calculate g_l2_norm
+    # 在 fp32 下求平方和，防止半精度（bf16/fp16）溢出
+    total_norm = torch.sqrt(sum(g.detach().float().pow(2).sum() for g in grads))
+    if total_norm < max_l2_norm:
+        return
+
+    # inplace scale g down by a factor of M / (g_l2_norm + eps)
+    for g in grads:
+        factor = max_l2_norm / (total_norm + 1e-6)
+        g.detach().mul_(factor)
