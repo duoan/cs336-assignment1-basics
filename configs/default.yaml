@@ -25,6 +25,7 @@ training:
   save_interval: 10000
   compile: false
   compile_mode: default
+  clear_compile_cache: false
   gpu_peak_tflops: null
 
 data:

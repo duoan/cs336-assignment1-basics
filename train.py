@@ -1,3 +1,4 @@
+import os
 import time
 
 import hydra
@@ -117,12 +118,18 @@ def train(cfg: DictConfig):
     flops_per_step_approx = 6 * total_params * tokens_per_step
     print(f"flops_per_step (profiler): {flops_per_step:,.0f}")
     print(f"flops_per_step (6NBS approx): {flops_per_step_approx:,.0f}")
-    print(f"ratio (profiler / approx): {flops_per_step / flops_per_step_approx:.2f}")
+    print(f"ratio (profiler / 6NBS): {flops_per_step / flops_per_step_approx:.2f}")
 
     all_params = list(model.parameters())
 
     if cfg.training.get("compile", False):
         compile_mode = cfg.training.get("compile_mode", "default")
+        if cfg.training.get("clear_compile_cache", False):
+            import shutil
+            cache_dir = os.path.join("/tmp", "torchinductor_" + os.environ.get("USER", ""))
+            if os.path.exists(cache_dir):
+                shutil.rmtree(cache_dir)
+                print(f"Cleared compile cache: {cache_dir}")
         if torch.cuda.is_available():
             compute_loss_fn = torch.compile(compute_loss, mode=compile_mode)
         else:
