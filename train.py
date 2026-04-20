@@ -116,8 +116,9 @@ def train(cfg: DictConfig):
     model.zero_grad(set_to_none=True)
 
     if cfg.training.get("compile", False):
+        compile_mode = cfg.training.get("compile_mode", "default")
         if torch.cuda.is_available():
-            model = torch.compile(model)
+            model = torch.compile(model, mode=compile_mode)
         else:
             model = torch.compile(model, backend="aot_eager")
 
