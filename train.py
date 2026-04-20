@@ -121,8 +121,8 @@ def train(cfg: DictConfig):
         else:
             model = torch.compile(model, backend="aot_eager")
 
-    compiled_cross_entropy = torch.compile(cross_entropy) if cfg.training.get("compile", False) and torch.cuda.is_available() else cross_entropy
-    compiled_clip_gradient = torch.compile(clip_gradient) if cfg.training.get("compile", False) and torch.cuda.is_available() else clip_gradient
+    compiled_cross_entropy = cross_entropy
+    compiled_clip_gradient = clip_gradient
 
     optimizer = AdamW(
         params=model.parameters(),
