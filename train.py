@@ -26,16 +26,13 @@ def compute_loss(model, inputs, targets):
     return cross_entropy(logits, targets)
 
 
-def train_step(model, optimizer, compute_loss_fn, all_params, max_l2_norm, micro_batches, grad_accum_steps):
+def train_step(model, optimizer, compute_loss_fn, all_params, max_l2_norm, inputs, targets):
     optimizer.zero_grad(set_to_none=True)
-    total_loss = 0.0
-    for inputs, targets in micro_batches:
-        loss = compute_loss_fn(model, inputs, targets)
-        (loss / grad_accum_steps).backward()
-        total_loss += loss.item()
+    loss = compute_loss_fn(model, inputs, targets)
+    loss.backward()
     clip_gradient(all_params, max_l2_norm=max_l2_norm)
     optimizer.step()
-    return total_loss / grad_accum_steps
+    return loss.item()
 
 
 @torch.inference_mode()
@@ -81,10 +78,6 @@ def train(cfg: DictConfig):
     m = cfg.model
     t = cfg.training
 
-    grad_accum_steps = t.get("grad_accum_steps", 1)
-    assert t.batch_size % grad_accum_steps == 0, "batch_size must be divisible by grad_accum_steps"
-    micro_batch_size = t.batch_size // grad_accum_steps
-
     tokens_per_step = t.batch_size * m.context_length
     max_steps = t.total_tokens // tokens_per_step
     warmup_iters = int(max_steps * t.warmup_ratio)
@@ -92,8 +85,7 @@ def train(cfg: DictConfig):
 
     print(
         f"tokens_per_step={tokens_per_step:,}, max_steps={max_steps:,}, "
-        f"warmup_iters={warmup_iters:,}, total_tokens={t.total_tokens:,}, "
-        f"micro_batch_size={micro_batch_size}, grad_accum_steps={grad_accum_steps}"
+        f"warmup_iters={warmup_iters:,}, total_tokens={t.total_tokens:,}"
     )
 
     if torch.cuda.is_available():
@@ -121,7 +113,7 @@ def train(cfg: DictConfig):
     if gpu_peak_flops is not None:
         gpu_peak_flops = gpu_peak_flops * 1e12
 
-    flops_per_step = measure_flops(model, m.vocab_size, micro_batch_size, m.context_length, device) * grad_accum_steps
+    flops_per_step = measure_flops(model, m.vocab_size, t.batch_size, m.context_length, device)
     flops_per_step_approx = 6 * total_params * tokens_per_step
     print(f"flops_per_step (profiler): {flops_per_step:,.0f}")
     print(f"flops_per_step (6NBS approx): {flops_per_step_approx:,.0f}")
@@ -131,9 +123,6 @@ def train(cfg: DictConfig):
 
     if cfg.training.get("compile", False):
         compile_mode = cfg.training.get("compile_mode", "default")
-        if grad_accum_steps > 1 and compile_mode == "max-autotune":
-            compile_mode = "max-autotune-no-cudagraphs"
-            print(f"grad_accum_steps={grad_accum_steps} > 1, switched compile_mode to {compile_mode}")
         if torch.cuda.is_available():
             compute_loss_fn = torch.compile(compute_loss, mode=compile_mode)
         else:
@@ -145,19 +134,18 @@ def train(cfg: DictConfig):
     pin_memory = torch.cuda.is_available()
 
     train_dataset = NumpyBinaryTokenDataset(cfg.data.train_path, context_length=m.context_length)
-    total_micro_batches = max_steps * grad_accum_steps
-    train_sampler = RandomSampler(train_dataset, replacement=True, num_samples=total_micro_batches * micro_batch_size)
+    train_sampler = RandomSampler(train_dataset, replacement=True, num_samples=max_steps * t.batch_size)
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=micro_batch_size, sampler=train_sampler,
+        batch_size=t.batch_size, sampler=train_sampler,
         num_workers=num_workers, pin_memory=pin_memory,
     )
 
     valid_dataset = NumpyBinaryTokenDataset(cfg.data.valid_path, context_length=m.context_length)
-    valid_sampler = RandomSampler(valid_dataset, replacement=True, num_samples=t.eval_steps * micro_batch_size)
+    valid_sampler = RandomSampler(valid_dataset, replacement=True, num_samples=t.eval_steps * t.batch_size)
     valid_dataloader = DataLoader(
         valid_dataset,
-        batch_size=micro_batch_size, sampler=valid_sampler,
+        batch_size=t.batch_size, sampler=valid_sampler,
         num_workers=num_workers, pin_memory=pin_memory,
     )
 
@@ -181,10 +169,8 @@ def train(cfg: DictConfig):
 
     for step in tqdm(range(start_step, max_steps)):
         data_tick = time.perf_counter()
-        micro_batches = []
-        for _ in range(grad_accum_steps):
-            inputs, targets = next(train_iter)
-            micro_batches.append((inputs.to(device), targets.to(device)))
+        inputs, targets = next(train_iter)
+        inputs, targets = inputs.to(device), targets.to(device)
         data_time_accum += time.perf_counter() - data_tick
 
         lr = get_lr_cosine_schedule(step, t.min_lr, t.max_lr, warmup_iters, cosine_cycle_iters)
@@ -194,7 +180,7 @@ def train(cfg: DictConfig):
         compute_tick = time.perf_counter()
         train_loss = train_step(
             model, optimizer, compute_loss_fn, all_params,
-            max_l2_norm, micro_batches, grad_accum_steps,
+            max_l2_norm, inputs, targets,
         )
         compute_time_accum += time.perf_counter() - compute_tick
         interval_steps += 1

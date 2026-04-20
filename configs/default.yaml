@@ -23,7 +23,6 @@ training:
   log_interval: 100
   eval_interval: 1000
   save_interval: 10000
-  grad_accum_steps: 1
   compile: false
   compile_mode: default
   gpu_peak_tflops: null
