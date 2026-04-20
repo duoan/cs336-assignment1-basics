@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import IO, Any, BinaryIO
 
+import numpy as np
 import numpy.typing as npt
 import regex
 import torch
@@ -477,8 +478,17 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
+    ix = np.random.randint(0, len(dataset) - context_length, size=(batch_size, 1))
+    offsets = np.arange(context_length)
+    x_indices = ix + offsets
+    y_indices = ix + offsets + 1
 
-    raise NotImplementedError
+    x_np = dataset[x_indices].astype(np.int64)
+    y_np = dataset[y_indices].astype(np.int64)
+    x_tensor = torch.from_numpy(x_np).to(device=device, non_blocking=True)
+    y_tensor = torch.from_numpy(y_np).to(device=device, non_blocking=True)
+
+    return x_tensor, y_tensor
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
