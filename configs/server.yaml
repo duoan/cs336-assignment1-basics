@@ -2,6 +2,7 @@ defaults:
   - default
 
 training:
+  dtype: bfloat16
   batch_size: 128
   max_steps: 80000
   warmup_iters: 2000

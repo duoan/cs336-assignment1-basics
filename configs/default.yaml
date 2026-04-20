@@ -8,6 +8,7 @@ model:
   rope_theta: 10000
 
 training:
+  dtype: float32
   batch_size: 16
   max_steps: 80000
   lr: 6e-4

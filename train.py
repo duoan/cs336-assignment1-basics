@@ -35,7 +35,7 @@ def train(cfg: DictConfig):
         d_ff=m.d_ff,
         rope_theta=m.rope_theta,
         device=device,
-        dtype=torch.float32,
+        dtype=getattr(torch, cfg.training.dtype),
     )
 
     train_dataset = NumpyBinaryTokenDataset(cfg.data.train_path, context_length=m.context_length)
