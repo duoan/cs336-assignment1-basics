@@ -91,6 +91,8 @@ def train(cfg: DictConfig):
         gpu_peak_flops = gpu_peak_flops * 1e12
 
     def measure_flops():
+        from cs336_basics.functions import cross_entropy as ce_fn
+
         dummy_input = torch.randint(0, m.vocab_size, (t.batch_size, m.context_length), device=device)
         dummy_target = torch.randint(0, m.vocab_size, (t.batch_size, m.context_length), device=device)
 
@@ -100,7 +102,7 @@ def train(cfg: DictConfig):
 
         with profile(activities=activities, with_flops=True) as prof:
             logits = model(dummy_input)
-            loss = cross_entropy(logits, dummy_target)
+            loss = ce_fn(logits, dummy_target)
             loss.backward()
 
         fwd_bwd_flops = sum(e.flops for e in prof.key_averages() if e.flops > 0)
