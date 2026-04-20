@@ -1,5 +1,6 @@
 import math
 from collections.abc import Callable
+from typing import Any
 
 import torch
 
@@ -28,6 +29,7 @@ class AdamW(torch.optim.Optimizer):
         betas: tuple[float, float] = (0.9, 0.999),
         eps: float = 1e-8,
         weight_decay: float = 0.01,
+        **kwargs: Any,
     ):
         if lr < 0:
             raise ValueError(f"Invalid learning rate: {lr}")

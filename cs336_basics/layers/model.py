@@ -1,3 +1,5 @@
+from typing import Any
+
 import torch.nn as nn
 from jaxtyping import Float, Int
 from torch import Tensor
@@ -20,17 +22,26 @@ class TransformerLanguageModel(nn.Module):
         rope_theta: float,
         device=None,
         dtype=None,
-    ):
+        **kwargs: Any,
+    ) -> None:
         super().__init__()
-        self.token_embeddings = TokenEmbedding(vocab_size, d_model)
+        self.token_embeddings = TokenEmbedding(vocab_size, d_model, device=device, dtype=dtype)
         self.layers = nn.ModuleList(
             [
-                TransformerBlock(d_model, num_heads, d_ff, max_seq_len=context_length, theta=rope_theta)
+                TransformerBlock(
+                    d_model,
+                    num_heads,
+                    d_ff,
+                    max_seq_len=context_length,
+                    theta=rope_theta,
+                    device=device,
+                    dtype=dtype,
+                )
                 for _ in range(num_layers)
             ]
         )
         self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
-        self.lm_head = Linear(vocab_size, d_model)
+        self.lm_head = Linear(vocab_size, d_model, device=device, dtype=dtype)
 
     def forward(
         self,

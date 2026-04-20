@@ -40,7 +40,7 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x: Float[Tensor, "..."]) -> Float[Tensor, "..."]:
         seq_len = x.size(1)
-        token_positions = einx.id("seq_len -> 1 seq_len", torch.arange(seq_len))
+        token_positions = torch.arange(seq_len, device=x.device).unsqueeze(0)
         x = x + self.attn(self.ln1(x), token_positions)
         x = x + self.ffn(self.ln2(x))
         return x

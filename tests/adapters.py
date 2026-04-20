@@ -7,7 +7,6 @@ from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import IO, Any, BinaryIO
 
-import numpy as np
 import numpy.typing as npt
 import regex
 import torch
@@ -15,7 +14,7 @@ from jaxtyping import Bool, Float, Int
 from loguru import logger
 from torch import Tensor
 
-from cs336_basics import functions, layers
+from cs336_basics import checkpointing, data, functions, layers
 from cs336_basics.consts import PAT
 from cs336_basics.optimizers import AdamW, get_lr_cosine_schedule
 
@@ -478,17 +477,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    ix = np.random.randint(0, len(dataset) - context_length, size=(batch_size, 1))
-    offsets = np.arange(context_length)
-    x_indices = ix + offsets
-    y_indices = ix + offsets + 1
-
-    x_np = dataset[x_indices].astype(np.int64)
-    y_np = dataset[y_indices].astype(np.int64)
-    x_tensor = torch.from_numpy(x_np).to(device=device, non_blocking=True)
-    y_tensor = torch.from_numpy(y_np).to(device=device, non_blocking=True)
-
-    return x_tensor, y_tensor
+    return data.get_batch(dataset, batch_size, context_length, device)
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -594,7 +583,7 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    checkpointing.save_checkpoint(model, optimizer, iteration, out)
 
 
 def run_load_checkpoint(
@@ -615,7 +604,7 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    return checkpointing.load_checkpoint(src, model, optimizer)
 
 
 def get_tokenizer(
