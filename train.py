@@ -137,7 +137,8 @@ def train(cfg: DictConfig):
             count += 1
         return total_loss / count
 
-    step_time = time.perf_counter()
+    interval_start = time.perf_counter()
+    interval_steps = 0
     for step, (inputs, targets) in enumerate(tqdm(train_dataloader, initial=start_step, total=max_steps)):
         if step < start_step:
             continue
@@ -156,18 +157,21 @@ def train(cfg: DictConfig):
         optimizer.step()
 
         train_loss = loss.item()
-        now = time.perf_counter()
-        dt = now - step_time
-        step_time = now
-        tokens_per_sec = tokens_per_step / dt if dt > 0 else 0
+        interval_steps += 1
 
         if (step + 1) % t.log_interval == 0:
+            now = time.perf_counter()
+            elapsed = now - interval_start
+            avg_dt = elapsed / interval_steps
+            tokens_per_sec = tokens_per_step / avg_dt
             mfu_str = ""
-            if gpu_peak_flops is not None and dt > 0:
-                mfu = flops_per_step / (dt * gpu_peak_flops) * 100
+            if gpu_peak_flops is not None:
+                mfu = flops_per_step / (avg_dt * gpu_peak_flops) * 100
                 mfu_str = f", mfu={mfu:.1f}%"
             tqdm.write(f"step {step+1}, lr={lr:.6f}, train_loss={train_loss:.4f}, "
-                       f"tok/s={tokens_per_sec:,.0f}, dt={dt*1000:.0f}ms{mfu_str}")
+                       f"tok/s={tokens_per_sec:,.0f}, avg_dt={avg_dt*1000:.0f}ms{mfu_str}")
+            interval_start = now
+            interval_steps = 0
         if (step + 1) % t.eval_interval == 0:
             val_loss = evaluate()
             tqdm.write(f"step {step + 1}, val_loss={val_loss:.4f}")
