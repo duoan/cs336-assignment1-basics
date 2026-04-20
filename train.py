@@ -3,6 +3,7 @@ import time
 
 import hydra
 import torch
+import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.data import DataLoader, RandomSampler
@@ -10,7 +11,6 @@ from tqdm import tqdm
 
 from cs336_basics import checkpointing, layers
 from cs336_basics.data import NumpyBinaryTokenDataset
-from cs336_basics.functions import clip_gradient, cross_entropy
 from cs336_basics.optimizers import AdamW, get_lr_cosine_schedule
 
 
@@ -118,18 +118,12 @@ def train(cfg: DictConfig):
 
     all_params = list(model.parameters())
 
-    def compute_loss(inputs, targets):
-        logits = model(inputs)
-        return cross_entropy(logits, targets)
-
     if cfg.training.get("compile", False):
         compile_mode = cfg.training.get("compile_mode", "default")
         if torch.cuda.is_available():
-            compiled_compute_loss = torch.compile(compute_loss, mode=compile_mode)
+            model = torch.compile(model, mode=compile_mode)
         else:
-            compiled_compute_loss = torch.compile(compute_loss, backend="aot_eager")
-    else:
-        compiled_compute_loss = compute_loss
+            model = torch.compile(model, backend="aot_eager")
 
     optimizer = AdamW(
         params=all_params,
@@ -151,7 +145,8 @@ def train(cfg: DictConfig):
         for inputs, targets in valid_dataloader:
             inputs = inputs.to(device)
             targets = targets.to(device)
-            loss = compiled_compute_loss(inputs, targets)
+            logits = model(inputs)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
             total_loss += loss.item()
             count += 1
         return total_loss / count
@@ -177,9 +172,10 @@ def train(cfg: DictConfig):
         optimizer.zero_grad(set_to_none=True)
         inputs = inputs.to(device)
         targets = targets.to(device)
-        loss = compiled_compute_loss(inputs, targets)
+        logits = model(inputs)
+        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
         loss.backward()
-        clip_gradient(all_params, max_l2_norm=t.max_l2_norm)
+        torch.nn.utils.clip_grad_norm_(all_params, max_norm=t.max_l2_norm)
         optimizer.step()
 
         train_loss = loss.item()
