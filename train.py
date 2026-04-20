@@ -124,18 +124,20 @@ def train(cfg: DictConfig):
 
     if cfg.training.get("compile", False):
         compile_mode = cfg.training.get("compile_mode", "default")
+        cache_dir = os.path.join("/tmp", "torchinductor_" + os.environ.get("USER", ""))
         if cfg.training.get("clear_compile_cache", False):
             import shutil
-            cache_dir = os.path.join("/tmp", "torchinductor_" + os.environ.get("USER", ""))
             if os.path.exists(cache_dir):
                 shutil.rmtree(cache_dir)
                 print(f"Cleared compile cache: {cache_dir}")
         if compile_mode == "max-autotune":
             torch._inductor.config.coordinate_descent_tuning = True
+            torch._inductor.config.max_autotune = True
         if torch.cuda.is_available():
             compute_loss_fn = torch.compile(compute_loss, mode=compile_mode)
         else:
             compute_loss_fn = torch.compile(compute_loss, backend="aot_eager")
+        print(f"Compile cache: {cache_dir}")
     else:
         compute_loss_fn = compute_loss
 
