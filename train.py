@@ -118,10 +118,11 @@ def train(cfg: DictConfig):
     if cfg.training.get("compile", False):
         if torch.cuda.is_available():
             model = torch.compile(model)
-            cross_entropy = torch.compile(cross_entropy)
-            clip_gradient = torch.compile(clip_gradient)
         else:
             model = torch.compile(model, backend="aot_eager")
+
+    compiled_cross_entropy = torch.compile(cross_entropy) if cfg.training.get("compile", False) and torch.cuda.is_available() else cross_entropy
+    compiled_clip_gradient = torch.compile(clip_gradient) if cfg.training.get("compile", False) and torch.cuda.is_available() else clip_gradient
 
     optimizer = AdamW(
         params=model.parameters(),
@@ -144,7 +145,7 @@ def train(cfg: DictConfig):
             inputs = inputs.to(device)
             targets = targets.to(device)
             logits = model(inputs)
-            loss = cross_entropy(logits, targets)
+            loss = compiled_cross_entropy(logits, targets)
             total_loss += loss.item()
             count += 1
         return total_loss / count
@@ -163,9 +164,9 @@ def train(cfg: DictConfig):
         inputs = inputs.to(device)
         targets = targets.to(device)
         logits = model(inputs)
-        loss = cross_entropy(logits, targets)
+        loss = compiled_cross_entropy(logits, targets)
         loss.backward()
-        clip_gradient(model.parameters(), max_l2_norm=t.max_l2_norm)
+        compiled_clip_gradient(model.parameters(), max_l2_norm=t.max_l2_norm)
         optimizer.step()
 
         train_loss = loss.item()
