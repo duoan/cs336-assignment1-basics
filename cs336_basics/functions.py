@@ -65,13 +65,12 @@ def clip_gradient(parameters: list[Float[Tensor, " ..."]], max_l2_norm=1e-6):
     if not grads:
         return 0.0
 
-    # calculate g_l2_norm
-    # 在 fp32 下求平方和，防止半精度（bf16/fp16）溢出
-    total_norm = torch.sqrt(sum(g.detach().float().pow(2).sum() for g in grads))
-    if total_norm < max_l2_norm:
-        return
+    total_norm = torch.norm(
+        torch.stack([torch.norm(g.detach().float(), 2) for g in grads]), 2
+    )
+    if total_norm <= max_l2_norm:
+        return total_norm.item()
 
-    # inplace scale g down by a factor of M / (g_l2_norm + eps)
+    clip_coef = max_l2_norm / (total_norm + 1e-6)
     for g in grads:
-        factor = max_l2_norm / (total_norm + 1e-6)
-        g.detach().mul_(factor)
+        g.detach().mul_(clip_coef)

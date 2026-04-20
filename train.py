@@ -126,8 +126,10 @@ def train(cfg: DictConfig):
     compiled_cross_entropy = cross_entropy
     compiled_clip_gradient = clip_gradient
 
+    all_params = list(model.parameters())
+
     optimizer = AdamW(
-        params=model.parameters(),
+        params=all_params,
         lr=t.lr,
         betas=tuple(t.betas),
         eps=t.eps,
@@ -169,7 +171,7 @@ def train(cfg: DictConfig):
         logits = model(inputs)
         loss = compiled_cross_entropy(logits, targets)
         loss.backward()
-        compiled_clip_gradient(model.parameters(), max_l2_norm=t.max_l2_norm)
+        compiled_clip_gradient(all_params, max_l2_norm=t.max_l2_norm)
         optimizer.step()
 
         train_loss = loss.item()
@@ -177,6 +179,8 @@ def train(cfg: DictConfig):
 
         if (step + 1) % t.log_interval == 0:
             gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             now = time.perf_counter()
             elapsed = now - interval_start
             avg_dt = elapsed / interval_steps
