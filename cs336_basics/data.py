@@ -43,6 +43,7 @@ class NumpyBinaryTokenDataset(torch.utils.data.Dataset):
         self.data = np.memmap(input_path, dtype=np.uint16, mode="r")
         self.context_length = context_length
         self.total_token = len(self.data)
+        print(f"Total token: {self.total_token:,}")
 
     def __len__(self):
         return self.total_token - self.context_length
