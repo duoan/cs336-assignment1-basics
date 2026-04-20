@@ -30,6 +30,7 @@ def train_step(model, optimizer, compute_loss_fn, all_params, max_l2_norm, micro
     optimizer.zero_grad(set_to_none=True)
     total_loss = 0.0
     for inputs, targets in micro_batches:
+        torch.compiler.cudagraph_mark_step_begin()
         loss = compute_loss_fn(model, inputs, targets)
         (loss / grad_accum_steps).backward()
         total_loss += loss.item()
