@@ -1,3 +1,4 @@
+import gc
 import time
 
 import hydra
@@ -151,6 +152,7 @@ def train(cfg: DictConfig):
             count += 1
         return total_loss / count
 
+    gc.disable()
     interval_start = time.perf_counter()
     interval_steps = 0
     for step, (inputs, targets) in enumerate(tqdm(train_dataloader, initial=start_step, total=max_steps)):
@@ -174,6 +176,7 @@ def train(cfg: DictConfig):
         interval_steps += 1
 
         if (step + 1) % t.log_interval == 0:
+            gc.collect()
             now = time.perf_counter()
             elapsed = now - interval_start
             avg_dt = elapsed / interval_steps
@@ -189,6 +192,9 @@ def train(cfg: DictConfig):
             interval_start = now
             interval_steps = 0
         if (step + 1) % t.eval_interval == 0:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             val_loss = evaluate()
             tqdm.write(f"step {step + 1}, val_loss={val_loss:.4f}")
             interval_start = time.perf_counter()
