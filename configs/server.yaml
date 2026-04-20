@@ -4,7 +4,7 @@ defaults:
 training:
   dtype: bfloat16
   batch_size: 1024
-  grad_accum_steps: 1
+  grad_accum_steps: 2
   eval_steps: 200
   compile: true
   compile_mode: max-autotune
