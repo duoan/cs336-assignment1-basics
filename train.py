@@ -116,6 +116,8 @@ def train(cfg: DictConfig):
     if cfg.training.get("compile", False):
         if torch.cuda.is_available():
             model = torch.compile(model)
+            cross_entropy = torch.compile(cross_entropy)
+            clip_gradient = torch.compile(clip_gradient)
         else:
             model = torch.compile(model, backend="aot_eager")
 
